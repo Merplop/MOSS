@@ -10,3 +10,13 @@ Contains:
 -Functional user input system, shell commands
 
 -Bootable on any x86-compatible CPU
+
+**How to compile & run:**
+
+-Ensure you have bochs installed
+
+-Navigate to bin directory
+
+-Run 'make MOSS'
+
+-Run bochs, then choose option 6 and type 'c'
