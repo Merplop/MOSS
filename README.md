@@ -1,5 +1,5 @@
 # MOSS
-Hobbyist operating system written in assembly
+Hobbyist 16-bit real mode operating system written in assembly
 
 Contains:
 
@@ -7,6 +7,6 @@ Contains:
 
 -Basic kernel onto which bootloader loads and from which shell commands are executed
 
--Functional user input system
+-Functional user input system, shell commands
 
--WIP: Executed shell commands
+-Bootable on any x86-compatible CPU
