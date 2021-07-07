@@ -1,84 +1,225 @@
 ; MOSS kernel
-; Miro Haapalainen (Merplop), 2020
+; Miro Haapalainen (Merplop), 2020-2021
+; GNU GPL License v.3
 
-mov ah, 0x00		; set video mode
-mov al, 0x03		; 80x25
-int 0x10
+kinit:
+	call mscreenr
 
-mov ah, 0x0B		; set colour scheme
-mov bh, 0x00
-mov bl, 0x09
-int 0x10
+	; print heading and info msg
+	mov si, .os_str
+	call print
 
-; print heading and info message
-mov si, string_1
-call print
+	mov si, .underscore_str
+	call print
+
+	mov si, .init_str
+	call print
 
 getinput:
-mov si, prompt
-call print
+	mov si, prompt		; prints prompt to screen
+	call print		; calls print function
+	xor cx, cx
+	mov si, cmdstr
 
-mov di, cmdstr
-
+	mov ax, 0x2000
+	mov es, ax
+	mov ds, ax
+		
 keyloop:
-mov ax, 0x00
-int 0x16		; key stroke int
+	xor ax, ax
+	int 16h			; key stroke interrupt
 
-mov ah, 0x0e
-cmp al, 0xD		; checks for enter key press
-je runcmd
-int 0x10
-mov [di], al
-inc di
-jmp keyloop
+	mov ah, 0x0e
+	cmp al, 0xD		; checks for "enter" key press
+	je execcmd
 
-runcmd:
-mov byte [di], 0
-mov al, [cmdstr]
-cmp al, 'h'
-je cmdfnd
-cmp al, 'n'
-je end_programme
-mov si, cmd_fail
-call print
-jmp getinput
+	int 0x10
+	mov [si], al
+	inc cx			; incriment contents of di
+	inc si
+	jmp keyloop		; loop back to start of function
 
-cmdfnd:
-mov si, cmd_success	; prints command success msg
-call print
-jmp getinput		; return to get input mode
+execcmd:
+	cmp cx, 0
+	je cmdf
+
+	mov byte [si], 0 
+	mov si, cmdstr
+
+chcmd:
+	push cx
+	mov di, reboot_cmd
+	repe cmpsb
+	je reboot
+
+	pop cx
+	push cx
+	mov di, hcp_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je halt_cpu
+
+	pop cx
+	push cx
+	mov di, help_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je help_msg
+
+	pop cx
+	push cx
+	mov di, ver_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je ver_msg
+
+	pop cx
+	push cx
+	mov di, clr_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je clear_cmd
+
+	pop cx
+	push cx
+	mov di, colour0_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour0
+
+	pop cx
+	push cx
+	mov di, colour1_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour1
+
+	pop cx
+	push cx
+	mov di, colour2_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour2
+
+	pop cx
+	push cx
+	mov di, colour3_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour3
+
+	pop cx
+	push cx
+	mov di, colour4_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour4
+
+	pop cx
+	push cx
+	mov di, colour5_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour5
+
+	pop cx
+	push cx
+	mov di, colour6_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour6
+
+	pop cx
+	push cx
+	mov di, colour7_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour7
+
+	pop cx
+	push cx
+	mov di, colour8_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour8
+
+	pop cx
+	push cx
+	mov di, colour9_cmd
+	mov si, cmdstr
+	repe cmpsb
+	je colour9
+
+	pop cx
+
+cmdf:
+	mov si, cmd_fail	; prints failure msg
+	call print
+	jmp getinput		; return to get input mode
+
+halt_cpu:
+	mov ah, 0x00
+	mov al, 0x03
+	int 0x10
+	popa
+	cli
+	hlt
 
 
-print:
-mov ah, 0x0e		; BIOS teletype output interrupt
-mov bh, 0x0		; page #
-mov bl, 0x07		; colour (white)
-
-pchar:
-mov al, [si]
-cmp al, 0		; compare alow register to 0
-je endprint		; jump to halt if equal to alow = 0
-int 0x10		; print character in al
-add si, 1		; get next char
-jmp pchar		; initiate loop
-
-endprint:
-ret
 
 
-end_programme:
-cli
-hlt
 
+; internal commands
 
-string_1: db 'MOSS (Merplop Open Source System) v0.01alpha', 0xA, 0xD, '-----------------------------------', 0xA, 0xD, 0xA, 0xD, 'Type a command or run "help" to get started', 0xA, 0xD, 0
+reboot_cmd:	db 'reb', 0		; reboot kernel
+hcp_cmd:	db 'hcp', 0		; halt cpu command
+help_cmd:	db 'help', 0		; print internal commands to screen
+clr_cmd:	db 'clr', 0		; clear screen
+ver_cmd:	db 'ver', 0		; display kernel version
 
-cmd_success: db 0xA, 0xD, 'Command ran successfully', 0xA, 0xD, 0
+; colour commands
+colour0_cmd:	db 'colour 0', 0		; change background colour to 0x00 
+colour1_cmd:	db 'colour 1', 0		; change background colour to 0x01
+colour2_cmd:	db 'colour 2', 0		; change background colour to 0x02
+colour3_cmd:	db 'colour 3', 0		; change background colour to 0x03
+colour4_cmd:	db 'colour 4', 0		; change background colour to 0x04
+colour5_cmd:	db 'colour 5', 0		; change background colour to 0x05
+colour6_cmd:	db 'colour 6', 0		; change background colour to 0x06
+colour7_cmd:	db 'colour 7', 0		; change background colour to 0x07
+colour8_cmd:	db 'colour 8', 0		; change background colour to 0x08
+colour9_cmd:	db 'colour 9', 0		; change background colour to 0x09
+
+; includes
+
+include "graph/mscreenr.asm"
+include "inc/help.asm"
+include "inc/ver.asm"
+include "graph/print.asm"
+include "inc/initstr.asm"
+include "inc/reboot.asm"
+include "graph/clr.asm"
+
+; colour command includes
+
+include "inc/colour/colour0.asm"
+include "inc/colour/colour1.asm"
+include "inc/colour/colour2.asm"
+include "inc/colour/colour3.asm"
+include "inc/colour/colour4.asm"
+include "inc/colour/colour5.asm"
+include "inc/colour/colour6.asm"
+include "inc/colour/colour7.asm"
+include "inc/colour/colour8.asm"
+include "inc/colour/colour9.asm"
+
 cmd_fail: db 0xA, 0xD, 'ERROR 01: Invalid command or filename', 0xA, 0xD, 0
+
+prompt: db '$:', 0
+
+skipline: db 0xA, 0xD, 0
+
+colour_warning: db 'WARN - some BIOS colours may be difficult to read', 0xA, 0xD, 0
+
 cmdstr: db ''
 
-prompt: db '$', 0
-
-times 1536-($-$$) db 0
-
-; %include 'help.asm'
+times 2048-($-$$) db 0
