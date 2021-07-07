@@ -1,0 +1,2 @@
+reboot:
+	jmp 0xFFFF:0x0000
