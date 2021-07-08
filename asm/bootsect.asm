@@ -19,7 +19,7 @@ mov ah, 0x02		; read disk sectors
 mov al, 0x01		; parse number of sectors to read
 int 0x13		; sets up real-mode interrupt handler for disk read/write functionality
 
-jc firststage
+jc firststage   ; if fail, loop back to firststage
 
 mov bx, 0x2000
 mov es, bx
