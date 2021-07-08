@@ -1,3 +1,6 @@
+; string print utility
+; prints contents of SI register onto screen
+
 print:
 	pusha			; push all registers
 	xor ax, ax		; clear AX
