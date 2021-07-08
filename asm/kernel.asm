@@ -35,7 +35,7 @@ keyloop:
 
 	int 0x10
 	mov [si], al
-	inc cx			; incriment contents of di
+	inc cx
 	inc si
 	jmp keyloop		; loop back to start of function
 
