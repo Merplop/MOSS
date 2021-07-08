@@ -1,3 +1,5 @@
+; print help message onto screen
+
 help_msg:
 	mov si, .help_str
 	call print
