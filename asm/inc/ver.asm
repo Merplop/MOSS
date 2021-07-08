@@ -1,3 +1,5 @@
+; display version and development information
+
 ver_msg:
 	mov si, .ver_str
 	call print
