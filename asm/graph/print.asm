@@ -1,7 +1,7 @@
 print:
 	pusha
-;	xor ax, ax
-;	xor bx, bx
+	xor ax, ax
+	xor bx, bx
 	mov ah, 0x0e
 	mov bh, 0x00
 	mov bl, 0x07
