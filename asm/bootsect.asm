@@ -2,7 +2,8 @@
 ; Miro Haapalainen (Merplop), 2020-2021
 ; GNU GPL License v.3
 
-org 0x7c00		; load boot sector into memory offset 0xc700
+[BITS 16]         ; 16-bit real mode
+[ORG 0x7c00]	  	; load boot sector into memory offset 0xc700
 
 mov bx, 0x1000		; load into memory address 0x1000
 mov es, bx
