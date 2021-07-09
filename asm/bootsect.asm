@@ -13,7 +13,7 @@ mov bx, 0x0		; set ES:BX to 0x1000:0x0
 mov dh, 0x0		; set head to 0
 mov dl, 0x0		; set drive to 0
 mov ch, 0x0		; set cylinder to 0
-mov cl, 0x05		; jumpto this starting sector for disk read
+mov cl, 0x05
 
 firststage:
 mov ah, 0x02		; read disk sectors
