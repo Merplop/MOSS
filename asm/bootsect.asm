@@ -2,32 +2,32 @@
 ; Miro Haapalainen (Merplop), 2020-2021
 ; GNU GPL License v.3
 
-org 0x7c00	  	; load boot sector into memory offset 0xc700
+org 0x7c00		; load boot sector into memory offset 0xc700
 
 mov bx, 0x1000		; load into memory address 0x1000
 mov es, bx
 mov bx, 0x0		; set ES:BX to 0x1000:0x0
 
 ; configure hard disk for kernel dump
-mov dh, 0x0		; set head to 0
-mov dl, 0x0		; set drive to 0
-mov ch, 0x0		; set cylinder to 0
-mov cl, 0x05
+xor dh, dh		; set head to 0
+xor dl, dl		; set drive to 0
+xor ch, ch		; set cylinder to 0
+mov cl, 0x05		; jumpto this starting sector for disk read
 
 firststage:
 mov ah, 0x02		; read disk sectors
 mov al, 0x01		; parse number of sectors to read
 int 0x13		; sets up real-mode interrupt handler for disk read/write functionality
 
-jc firststage   ; if fail, loop back to firststage
+jc firststage
 
 mov bx, 0x2000
 mov es, bx
-mov bx, 0x0
+xor bx, bx
 
-mov dh, 0x0
-mov dl, 0x0
-mov ch, 0x0
+xor dh, dh
+xor dh, dh
+xor ch, ch
 mov cl, 0x02
 
 secondstage:
