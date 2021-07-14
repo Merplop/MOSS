@@ -212,7 +212,7 @@ include "inc/colour/colour7.asm"
 include "inc/colour/colour8.asm"
 include "inc/colour/colour9.asm"
 
-cmd_fail: db 0xA, 0xD, 'ERROR 01: Invalid command or filename', 0xA, 0xD, 0
+cmd_fail: db 0xA, 0xD, 'ERROR 01: Invalid command or filename', 0xA, 0xD, 0		; for byte definitions, 0xA is line feed, 0xD is carriage return, 0 is end
 
 prompt: db '$:', 0
 
