@@ -18,7 +18,7 @@ kinit:
 getinput:
 	mov si, prompt		; prints prompt to screen
 	call print		; calls print function
-	xor cx, cx
+	xor cx, cx		; clear cx register for looping through user input functions
 	mov si, cmdstr
 
 	mov ax, 0x2000
@@ -26,7 +26,7 @@ getinput:
 	mov ds, ax
 		
 keyloop:
-	xor ax, ax
+	xor ax, ax		; clear out accumulator
 	int 16h			; key stroke interrupt
 
 	mov ah, 0x0e
@@ -40,7 +40,7 @@ keyloop:
 	jmp keyloop		; loop back to start of function
 
 execcmd:
-	cmp cx, 0
+	cmp cx, 0		; if loop count is zero, print cmd fail msg to screen
 	je cmdf
 
 	mov byte [si], 0 
