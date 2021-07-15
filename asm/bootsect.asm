@@ -26,7 +26,7 @@ mov es, bx
 xor bx, bx
 
 xor dh, dh
-xor dh, dh
+xor dl, dl
 xor ch, ch
 mov cl, 0x02
 
