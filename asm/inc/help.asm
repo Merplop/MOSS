@@ -12,5 +12,5 @@ db 	'reb - Reboot kernel', 0xA, 0xD
 db	'help - Display this message', 0xA, 0xD
 db	'hcp - Halt CPU', 0xA, 0xD
 db	'ver - Display kernel version and development information', 0xA, 0xD
-db	'clr - Clear screen, reinitalise screeninit service', 0xA, 0xD
+db	'clr - Clear screen', 0xA, 0xD
 db	'colour <number> - Change background colour', 0xA, 0xD, 0
