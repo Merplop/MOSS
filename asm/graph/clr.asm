@@ -1,6 +1,14 @@
 ; clear screen command
-; for now, just calls mscreenr. Will have to develop a proper implementation later
+; now carries background colour over
 
 clear_cmd:
-call mscreenr
-jmp getinput
+
+mov ah, 0x00
+mov al, 0x03
+int 0x10
+
+mov ah, 0x0B
+mov bh, 0x00
+int 0x10
+
+ret
