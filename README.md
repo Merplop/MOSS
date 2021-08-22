@@ -1,5 +1,5 @@
 # MOSS (Merplop Open Source System); latest release: v0.04alpha
-Hobbyist 16-bit real mode operating system written in assembly
+Hobbyist 16-bit real mode operating system written in x86 Assembly
 
 Contains:
 
