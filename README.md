@@ -20,3 +20,5 @@ Contains:
 -Run 'make MOSS'
 
 -Run bochs, then choose option 6 and type 'c'
+
+In the future, I may consider moving the kernel to C because ASM is a pain the **s.
