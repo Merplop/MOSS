@@ -1,24 +1,11 @@
-# MOSS (Merplop Open Source System); latest release: v0.04alpha
-Hobbyist 16-bit real mode operating system written in x86 Assembly
+# MOSS (Merplop Open Source System); latest release: v1.0beta
+The kernel is now officially translated to C and runs in 32-bit mode.
 
-Contains:
+Features:
+-Functional keyboard and video driver + functional shell
 
--Basic bootloader, loaded into memory location 0x7c00
-
--Basic kernel onto which bootloader loads and from which shell commands are executed
-
--Functional user input system, shell commands
-
--Bootable on any x86-compatible CPU
-
-**How to compile & run:**
-
--Ensure you have bochs installed
-
--Navigate to bin directory
-
--Run 'make MOSS'
-
--Run bochs, then choose option 6 and type 'c'
-
-In the future, I may consider moving the kernel to C because ASM is a pain the **s.
+Current features being developed:
+-FAT32-based file system
+-Process execution handler
+-Multithreading
+-Some basic applications - calculator, text editor...
