@@ -1,0 +1,5 @@
+MOSS Filesystem (MFS)
+
+Before I implement a FAT32 filesystem that is readable from other operating systems as well,
+I decided I would try my hand at making my own very basic and probably not very functional
+filesystem, so this is what this is.
