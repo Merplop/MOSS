@@ -493,6 +493,7 @@ void kernel_main(void) {
 			cmd_str[input_length++] = input_char;
 			putchar(input_char);
 		}
+		// heyyyy ;)
 		arg_token = strtok(cmd_str, " ");
 		int command_found = 0;
 		int arg_error_caught = 0;
