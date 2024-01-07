@@ -1,4 +1,4 @@
-# MOSS (Merplop Open Source System); latest release: v1.0beta
+# MOSS (Miro's Open Source System); latest release: v1.0beta
 
 The kernel is now officially translated to C and runs in 32-bit mode.
 
