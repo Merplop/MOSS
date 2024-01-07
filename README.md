@@ -8,6 +8,8 @@ Features:
 
 -MFS, a rudimentary 'file system' which saves file and directory data to memory (FAT32 file system currently in progress)
 
+-tex, a basic text editor for editting MOSS-formatted data files
+
 Current features being developed:
 
 -FAT32 driver
@@ -17,8 +19,6 @@ Current features being developed:
 -Physical memory manager
 
 -Multithreading
-
--Some basic applications - calculator, text editor...
 
 # To run (QEMU):
 
