@@ -30,7 +30,7 @@ Current features being developed:
 
 -Run lsblk and choose which drive to burn it onto; I recommend a USB flash drive since this will wipe everything on your drive of choice
 
--Run the command 'sudo dd if=myos.iso of=/dev/sdx && sync'
+-Run the command 'sudo dd if=moss.iso of=/dev/sdx && sync'
 
 -Ensure you are booting onto the drive in EFI/legacy mode, as UEFI mode doesn't support VGA text mode correctly.
 
