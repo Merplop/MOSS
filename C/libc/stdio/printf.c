@@ -3,6 +3,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 static bool print(const char* data, size_t length) {
 	const unsigned char* bytes = (const unsigned char*) data;
@@ -10,6 +11,20 @@ static bool print(const char* data, size_t length) {
 		if (putchar(bytes[i]) == EOF)
 			return false;
 	return true;
+}
+
+int print_hex(uint64_t hex_value) {
+    uint8_t hexString[] = "0x0000000000000000\0";
+    uint8_t *ascii_numbers = "0123456789ABCDEF";
+    uint8_t nibble;
+
+    for (uint8_t i = 0; i < 16; i++) {
+        nibble = (uint8_t)(hex_value & 0x0F);
+        nibble = ascii_numbers[nibble];
+        hexString[17-i] = nibble;
+        hex_value >>= 4;
+    }
+    printf("%s", hexString);
 }
 
 int printf(const char* restrict format, ...) {

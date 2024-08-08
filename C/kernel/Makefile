@@ -12,6 +12,7 @@ PREFIX?=/usr/local
 EXEC_PREFIX?=$(PREFIX)
 BOOTDIR?=$(EXEC_PREFIX)/boot
 INCLUDEDIR?=$(PREFIX)/include
+KERNELDIR?=$(PREFIX)/kernel
 
 CFLAGS:=$(CFLAGS) -ffreestanding -Wall -Wextra
 CPPFLAGS:=$(CPPFLAGS) -D__is_kernel -Iinclude
@@ -27,14 +28,27 @@ CPPFLAGS:=$(CPPFLAGS) $(KERNEL_ARCH_CPPFLAGS)
 LDFLAGS:=$(LDFLAGS) $(KERNEL_ARCH_LDFLAGS)
 LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 
+#KERNEL_SRC=$(wildcard kernel/*.c)
+
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
+
+#KERNEL_LIBS_SRC=\
+#$(wildcard software/*.c) \
+#$(wildcard commands/*.c) \
+
+#KERNEL_LIBS=\
+#kernel/libs.o \
+
+#$(KERNEL_LIBS): $(KERNEL_LIBS_SRC)
+#	$(CC) -MD $^ -o $@ -std=gnu11 $(CFLAGS) $(CPPFLAGS)
 
 OBJS=\
 $(ARCHDIR)/crti.o \
 $(ARCHDIR)/crtbegin.o \
 $(KERNEL_OBJS) \
+$(KERNEL_LIBS) \
 $(ARCHDIR)/crtend.o \
 $(ARCHDIR)/crtn.o \
 

@@ -2,10 +2,10 @@
 
 #define MAX_FILE_SIZE 8192
 #define MAX_DIR_CAPACITY 8192
-#define NUM_COMMANDS 16
+#define NUM_COMMANDS 21
 #define MAX_ARGS 10
 
-const char KERNEL_ERROR[] = "ERROR 00 - Kernel panic error\r\n";
+const char KERNEL_PANIC_ERROR[] = "ERROR 00 - Kernel panic error\r\n";
 const char CMD_ERROR[] = "ERROR 01 - Command not found\r\n";
 const char ARG_COUNT_ERROR[] = "ERROR 02 - Invalid number of command-line arguments\r\n";
 const char ARG_ERROR[] = "ERROR 03 - Invalid command-line arguments\r\n";
@@ -14,6 +14,7 @@ const char DIR_EXISTS_ERROR[] = "ERROR 05 - Directory already exists\r\n";
 const char FILE_EXISTS_ERROR[] = "ERROR 06 - File already exists\r\n";
 const char FILE_NOT_FOUND_ERROR[] = "ERROR 07 - File not found\r\n";
 const char FILE_EMPTY_ERROR[] = "ERROR 08 - File is empty\r\n";
+const char DIR_NOT_FOUND_ERROR[] = "ERROR 09 - Directory not found\r\n";
 const char KERNEL_ERROR_FIN[] = "VIRHE 00 - Kerneli-paniikki\r\n";
 const char CMD_ERROR_FIN[] = {'V','I','R','H','E',' ','0','1',' ','-',' ','k','o','m','e','n','t','o','a',' ','e','i',' ','l',148,'y','t','y','n','y','t','\r','\n'};
 const char ARG_COUNT_ERROR_FIN[] = {'V','I','R','H','E',' ','0','2',' ','-',' ','V',132,132,'r',132,' ','m',132,132,' ','r',132,' ','a','r','g','u','m','e','n','t','t','e','j','a','\r','\n'};

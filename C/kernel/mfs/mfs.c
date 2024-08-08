@@ -10,14 +10,24 @@ const char DIR_EXISTS_ERROR = "ERROR 05 - Directory already exists\r\n";
 
 
 void changeDirectory(const char *name) {
-	if (strcmp(name, "..") == 0) {
-		currentInode = inodeList[currentInode].parent;
+	if (argc == 1) {
+		currentInode = 0;
+	} else if (argc == 2) {
+		if (memcmp(argv[1], "..", strlen("..")) == 0) {
+			currentInode = inodeList[currentInode].parent;
+		} else {
+			for (int i = 0; i < 1024; i++) {
+				if (inodeList[i].parent == currentInode && memcmp(fileNames[inodeList[i].number], argv[1], strlen(argv[1]))== 0) {
+					if (inodeList[i].type != 'd') {
+						printf(ARG_ERROR);
+						return;
+					}
+					currentInode = i;
+				}
+			}	
+		} 
 	} else {
-		for (int i=0;i<1024;i++){
-			if (inodeList[i].parent == currentInode && strcmp(inodeList[i].name, name) == 0) {
-				currentInode = 0;
-			}
-		}
+		printf(ARG_COUNT_ERROR);
 	}
 }
 

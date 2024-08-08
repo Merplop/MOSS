@@ -1,3 +1,7 @@
+// MOSS KERNEL
+// (C) Miro Haapalainen, 2024
+//
+
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -6,8 +10,8 @@
 #include <kernel/kernel.h>
 #include <sys/io.h>
 #include <sys/sleep.h>
-//#define NUM_COMMANDS 17
-//#define MAX_ARGS 10
+#include <moss/commands.h>
+#include <sys/multiboot.h>
 
 Inode inodeList[1024];
 char fileNames[1024][32];
@@ -19,21 +23,6 @@ uint32_t currentInode = 0;
 
 int colour_scheme[] = {7, 0};
 int custom_colour_scheme = 0;
-
-
-
-int isdigit(char c) { return c >= '0' && c <= '9'; }
-
-int atoi(const char *str) {
-  uint32_t value = 0;
-  while (isdigit(*str)) {
-    value *= 10;
-    value += (*str) - '0';
-    str++;
-  }
-
-  return value;
-}
 
 
 static void play_sound(uint32_t nFrequence) {
@@ -75,6 +64,13 @@ void beep_cmd() {
 	play_sound(freq);
 }
 
+/*
+
+isFile - Searches inode list for passed filename; returns
+index if match, -1 if not found
+
+@param name - name of file or directory
+*/
 
 int isFile(char* name) {
 	for (int i=0;i<1024;i++) {
@@ -83,20 +79,6 @@ int isFile(char* name) {
 		}
 	}
 	return -1;
-}
-
-void reb_cmd(void) {
-	uint8_t g = 0x02;
-	while (g & 0x02) {
-		g = inb(0x64);
-	}
-	outb(0x64, 0xFE);
-	__asm__ __volatile__("hlt");
-}
-
-void hlt_cmd(void) {
-	printf("Halting the CPU - you will have to hard reboot your PC");
-	__asm__ __volatile__("hlt");
 }
 
 void shutdown_cmd(void) {
@@ -164,7 +146,7 @@ void help_cmd(void) {
 		printf("sleep <s>        Sleep for s seconds\r\n");
 		printf("help             Display this\r\n");
 		printf("clear            Clear screen\r\n");
-		printf("ps				 View currently running processes\r\n"); 
+		printf("ps               View currently running processes\r\n"); 
 		printf("touch <name>     Create a file in working directory\r\n");
 		printf("mkdir <name>     Create a directory in working directory\r\n");
 		printf("cd <directory>   Change working directory\r\n");
@@ -290,7 +272,8 @@ void mkdir_cmd() {
                 return;
         }
         for (int i=0;i<1024;i++) {
-                if (memcmp(&fileNames[inodeList[i].number], argv[1], strlen(argv[1])) == 0 && inodeList[i].parent == currentInode) {
+                if (memcmp(&fileNames[inodeList[i].number], argv[1], strlen(argv[1])) == 0 && 
+				inodeList[i].parent == currentInode) {
                         printf(DIR_EXISTS_ERROR);
                         return;
                 }
@@ -315,7 +298,8 @@ void touch_cmd(void) {
 		printf(INODE_FULL_ERROR);
 	}
 	for (int i=0;i<1024;i++) {
-		if (inodeList[i].parent == currentInode && memcmp(fileNames[inodeList[i].number], argv[1], strlen(argv[1])) == 0) {
+		if (inodeList[i].parent == currentInode && 
+		memcmp(fileNames[inodeList[i].number], argv[1], strlen(argv[1])) == 0) {
 			printf(FILE_EXISTS_ERROR);
 			return;
 		}
@@ -344,6 +328,9 @@ void touch_cmd(void) {
 	inodeList[inodeCount++] = i1;
 }
 
+// TODO - filesystem functions are currently linear in time. This is slow and
+// poorly written code. Implement a hash map.
+
 void cd_cmd(void) {
 	if (argc == 1) {
 		currentInode = 0;
@@ -352,7 +339,8 @@ void cd_cmd(void) {
 			currentInode = inodeList[currentInode].parent;
 		} else {
 			for (int i = 0; i < 1024; i++) {
-				if (inodeList[i].parent == currentInode && memcmp(fileNames[inodeList[i].number], argv[1], strlen(argv[1]))== 0) {
+				if (inodeList[i].parent == currentInode && 
+				memcmp(fileNames[inodeList[i].number], argv[1], strlen(argv[1]))== 0) {
 					if (inodeList[i].type != 'd') {
 						printf(ARG_ERROR);
 						return;
@@ -366,8 +354,22 @@ void cd_cmd(void) {
 	}
 }
 
-void mv_cmd(void) {
+// TODO - move filesystem functions to separate directory, call functions here
 
+void mv_cmd(void) {
+/*	if (argc != 3) {
+		printf(ARG_COUNT_ERROR);
+		return;
+	}
+	int source_id = isFile(argv[1]);
+	if (source_id == 1) {
+		printf(FILE_NOT_FOUND_ERROR);
+		return;
+	}
+	int dest_id;
+	if (memcmp(argv[2], "..", strlen("..")) == 0) {
+	}
+	inodeList[id].parent = argv[2]; */
 }
 
 void rm_cmd(void) {
@@ -380,7 +382,12 @@ void rm_cmd(void) {
 		printf(FILE_NOT_FOUND_ERROR);
 		return;
 	}
-	
+	if (inodeList[id].type == 'd') {
+		printf("Invalid argument - Use rmdir to remove directories\r\n");
+	}
+	// Remove Inode information from file table
+	memset(&inodeList[id], 0, sizeof(Inode));
+	inodeCount--;
 }
 
 void cat_cmd(void) {
@@ -408,6 +415,10 @@ void cat_cmd(void) {
 	}
 }
 
+void rmdir_cmd() {
+	
+}
+
 void music_player(void) {
 	if (argc != 1) {
 		printf(ARG_COUNT_ERROR);
@@ -422,45 +433,54 @@ void music_player(void) {
 	while (1) {
 		note_input = get_key();
 		switch (note_input) {
+			case 0x11:
+				nosound();
+				return;
+			case '1':
+				mult = 1;
+				break;
+			case '2':
+				mult = 2;
+				break;
+			case '3':
+				mult = 3;
+				break;
 			case 'q':
-				play_sound(41*mult);
+				play_sound(130*mult);
 				break;
 			case 'w':
-				play_sound(43*mult);
+				play_sound(139*mult);
 				break;
 			case 'e':
-				play_sound(46*mult);
+				play_sound(147*mult);
 				break;
 			case 'r':
-				play_sound(49*mult);
+				play_sound(156*mult);
 				break;
 			case 't':
-				play_sound(52*mult);
+				play_sound(165*mult);
 				break;
 			case 'y':
-				play_sound(55*mult);
+				play_sound(175*mult);
 				break;
 			case 'u':
-				play_sound(58*mult);
+				play_sound(185*mult);
 				break;
 			case 'i':
-				play_sound(61*mult);
+				play_sound(196*mult);
 				break;
 			case 'o':
-				play_sound(65*mult);
+				play_sound(208*mult);
 				break;
 			case 'p':
-				play_sound(69*mult);
+				play_sound(220*mult);
 				break;
-		}
-		if (note_input == 'q') {
-			play_sound(82);
-		} else if (note_input == 'w') {
-			play_sound(87);
-		} else if (note_input == 'e') {
-			play_sound(92);
-		} else if (note_input == 'r') {
-			play_sound(98);
+			case '[':
+				play_sound(233*mult);
+				break;
+			case ']':
+				play_sound(247*mult);
+				break;
 		}
 	}
 }
@@ -483,7 +503,7 @@ void text_editor(void) {
 	printf("=======================================================\r\n");
 	printf("MOSS DATA FILE EDITOR - %s.MDF\r\n", argv[1]);
 	printf("=======================================================\r\n");
-	printf("Type ';w' to write to file\r\n");
+	printf("Type 'CTRL+s' to write to file\r\n");
 	int id = isFile(argv[1]);
 	char tex_buffer[8192];
 	int tex_input_length = 0;
@@ -498,8 +518,7 @@ void text_editor(void) {
 	int option_mode = 0;
 	while (1) {
 		tex_input = get_key();
-		if (option_mode == 1) {
-			if (tex_input == 'w') {
+		if (tex_input == 0x11) {
 				if (id == -1) {
 					argv[0] = "touch";
 					touch_cmd();
@@ -513,7 +532,6 @@ void text_editor(void) {
 				change_colour(colour_scheme[0], colour_scheme[1]);
 				terminal_initialize();
 				return;
-			}
 		}
 		if (tex_input == 0x0D) {
 			putchar('\r');
@@ -527,9 +545,6 @@ void text_editor(void) {
 				putchar(tex_input);
 			}
 			continue;
-		} else if (tex_input == ';') {
-			option_mode = 1;
-			continue;
 		}
 		putchar(tex_input);
 		tex_buffer[tex_input_length++] = tex_input;
@@ -537,10 +552,7 @@ void text_editor(void) {
 
 }
 
-char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown", 
-"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd"};
-void (*command_ptrs[NUM_COMMANDS])(void) = {beep_cmd, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd, 
-colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd};
+
 
 
 void language_prompt(void) {
@@ -578,6 +590,45 @@ void language_prompt(void) {
 		}
 	}
 }
+
+void tex_print(char* text) {
+	printf(text);
+}
+
+void run_file() {
+	if (argc != 2) {
+		printf(ARG_COUNT_ERROR);
+		return;
+	}
+	int id = isFile(argv[1]);
+	if (id == -1) {
+		printf(FILE_NOT_FOUND_ERROR);
+		return;
+	}
+	char* token = strtok(files[id].data, " ");
+	while (token != NULL) {
+		if (memcmp(token, "goto", strlen("goto")) == 0) {
+			
+		}
+		if (memcmp(token, "print", strlen("print")) == 0) {
+			tex_print(strtok(NULL, " "));
+		}
+		token = strtok(NULL, " ");
+	}
+}
+
+void snake_game() {
+	terminal_initialize();
+	update_cursor(3, 2);
+	const char snake_cursor[] = {178, '\0'};
+	printf(snake_cursor);
+	
+}
+
+char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown", 
+"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "snake"};
+void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd, 
+colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, snake_game};
 
 void start_shell() {
 	process shell;
@@ -631,7 +682,8 @@ void start_shell() {
 		int command_found = 0;
 		int arg_error_caught = 0;
 	        for (int i = 0; i < NUM_COMMANDS; i++) {
-			if (memcmp(arg_token, commands[i], strlen(arg_token)) == 0 && memcmp(arg_token, commands[i], strlen(commands[i])) == 0) {
+			if (memcmp(arg_token, commands[i], strlen(arg_token)) == 0 && 
+			memcmp(arg_token, commands[i], strlen(commands[i])) == 0) {
 				while (arg_token != NULL) {
 					if (argc == MAX_ARGS) {
 						printf(ARG_COUNT_ERROR);
@@ -655,7 +707,7 @@ void start_shell() {
 	}
 }
 
-void kernel_main(void) {
+void _main(multiboot_info_t* mbd, unsigned int magic) {
 	change_colour(7, 1);
 	memcpy(&fileNames[0], "root", strlen("root"));
 	dirs[0].size = 0;
@@ -677,6 +729,34 @@ void kernel_main(void) {
 		printf(welcome1_fin);
 		printf(version);
 		printf(welcome2);
+	}
+	if(magic != MULTIBOOT_BOOTLOADER_MAGIC) {
+		printf(KERNEL_PANIC_ERROR);
+		printf("Invalid magic number!\r\n");
+	}
+
+	if(!(mbd->flags >> 6 & 0x1)) {
+		printf(KERNEL_PANIC_ERROR);
+		printf("Invalid memory map given by GRUB bootloader\r\n");
+	}
+	int i;
+	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
+		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
+
+	//	printf("Start Addr: %d | Length: %d | Size: %d | Type: %d\r\n",
+	//	mmmt->addr_low, mmmt->len_low, mmmt->size, mmmt->type);
+		printf("Start addr: \0");
+		print_hex(mmmt->addr);
+		printf(" | Length: \0");
+		print_hex(mmmt->len);
+		printf(" | Size: \0");
+		print_hex(mmmt->size);
+		printf(" | Type : \0");
+		print_hex(mmmt->type);
+		printf("\r\n\r\n");
+		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
+			// Do something with memory here
+		}
 	}
 	start_shell();
 }

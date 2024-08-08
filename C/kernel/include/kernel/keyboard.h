@@ -5,6 +5,14 @@
 
 #pragma once
 
+enum {
+        LSHIFT_MAKE  = 0x2A,
+        LSHIFT_BREAK = 0xAA,
+        RSHIFT_MAKE  = 0x36,
+        RSHIFT_BREAK = 0xB6,
+        LCTRL_MAKE   = 0x1D,
+        LCTRL_BREAK  = 0x9D,
+};
 
 uint8_t get_key(void) {
 	const uint8_t *scancode_to_ascii = "\x00\x1B" "1234567890-=" "\x08"
@@ -29,11 +37,14 @@ uint8_t get_key(void) {
 		if (scancode == oldKey) {
 			continue;
 		} else if (scancode == 0x2A) {
+			left_shift = 1;
 			continue;
 		} else if (scancode == 0xAA) {
 			left_shift = 0;
+			continue;
 		} else if (scancode == 0x1D) {
 			left_ctrl = 1;
+			continue;
 		} else if (scancode == 0x9D) {
 			left_ctrl = 0;
 			continue;
@@ -43,6 +54,21 @@ uint8_t get_key(void) {
 			continue;
 		}
 		input_char = scancode_to_ascii[scancode];
+		
+		if (left_ctrl == 1) {
+			if (input_char == 'l') {
+				input_char = 0x0C;
+				break; 
+			}
+			if (input_char == 's') {
+				input_char = 0x13;
+				break;
+			}
+			if (input_char == 'q') {
+				input_char = 0x11;
+				break;
+			}
+		}
 
 		if (left_shift != 1) {
 			break;
