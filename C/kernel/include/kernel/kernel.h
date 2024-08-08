@@ -19,7 +19,7 @@ const char KERNEL_ERROR_FIN[] = "VIRHE 00 - Kerneli-paniikki\r\n";
 const char CMD_ERROR_FIN[] = {'V','I','R','H','E',' ','0','1',' ','-',' ','k','o','m','e','n','t','o','a',' ','e','i',' ','l',148,'y','t','y','n','y','t','\r','\n'};
 const char ARG_COUNT_ERROR_FIN[] = {'V','I','R','H','E',' ','0','2',' ','-',' ','V',132,132,'r',132,' ','m',132,132,' ','r',132,' ','a','r','g','u','m','e','n','t','t','e','j','a','\r','\n'};
 
-const char version[] = "Beta 1.0";
+const char version[] = "Beta 1.1";
 const char welcome1_eng[] = "------------------------------\r\nMOSS Kernel - Version ";
 const char welcome1_fin[] = "------------------------------\r\nMOSS-kerneli - Versio ";
 const char welcome2[] = "\r\n------------------------------\r\n";

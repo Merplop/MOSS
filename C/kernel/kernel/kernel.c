@@ -8,6 +8,7 @@
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
 #include <kernel/kernel.h>
+#include <kernel/memory_manager.h>
 #include <sys/io.h>
 #include <sys/sleep.h>
 #include <moss/commands.h>
@@ -708,6 +709,7 @@ void start_shell() {
 }
 
 void _main(multiboot_info_t* mbd, unsigned int magic) {
+	unsigned int magic_copy = magic;
 	change_colour(7, 1);
 	memcpy(&fileNames[0], "root", strlen("root"));
 	dirs[0].size = 0;
@@ -739,12 +741,13 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		printf(KERNEL_PANIC_ERROR);
 		printf("Invalid memory map given by GRUB bootloader\r\n");
 	}
+	initialize_memory_manager(mbd->mmap_addr, mbd->mmap_length);
+
+	printf("MEMORY MAP:\r\n");
 	int i;
 	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
 		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
 
-	//	printf("Start Addr: %d | Length: %d | Size: %d | Type: %d\r\n",
-	//	mmmt->addr_low, mmmt->len_low, mmmt->size, mmmt->type);
 		printf("Start addr: \0");
 		print_hex(mmmt->addr);
 		printf(" | Length: \0");
@@ -752,11 +755,20 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		printf(" | Size: \0");
 		print_hex(mmmt->size);
 		printf(" | Type : \0");
-		print_hex(mmmt->type);
-		printf("\r\n\r\n");
 		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
-			// Do something with memory here
+			printf("Available\0");
+			initialize_memory_region(mmmt->addr, mmmt->len);
+		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
+			printf("Reserved\0");
+			deinitialize_memory_region(mmmt->addr, mmmt->len);
+		} else if (mmmt->type == MULTIBOOT_MEMORY_ACPI_RECLAIMABLE) {
+			printf("ACPI-Reclaimable\0");
+		} else if (mmmt->type == MULTIBOOT_MEMORY_NVS) {
+			printf("Non-volatile storage\0");
+		} else if (mmmt->type == MULTIBOOT_MEMORY_BADRAM) {
+			printf("Faulty RAM\0");
 		}
+		printf("\r\n\r\n");
 	}
 	start_shell();
 }
