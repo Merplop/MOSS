@@ -1,4 +1,13 @@
-# MOSS (Miro's Open Source System); latest release: v1.0beta
+# MOSS (Miro's Open Source System); latest release: v1.1beta
+
+Release notes: v1.1beta
+
+-Kernel now reads memory map from GRUB bootloader
+
+-Beginnings of physical memory manager now implemented, initialising non-reserved memory regions as usable on startup
+
+
+Release Notes: v1.0beta
 
 The kernel is now officially translated to C and runs in 32-bit mode.
 
