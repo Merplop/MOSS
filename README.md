@@ -29,13 +29,15 @@ Current features being developed:
 
 -Multithreading
 
-# To run (QEMU):
+# To run (QEMU; requires Arch Linux-based distribution):
 
--Ensure you have the i386-version of QEMU installed
+-Ensure you have QEMU installed
 
--Navigate to the C directory and run the shell script ./run, which will compile the OS and execute it in QEMU
+-Install the i386-elf toolchain (i386-elf-gcc package on the AUR)
 
-# To run (real hardware):
+-Navigate to the C directory and run the shell script ./run; the cross-compiler will automatically compile the OS and QEMU will run it
+
+# To run (real hardware; requires Unix system):
 
 -Run lsblk and choose which drive to burn it onto; I recommend a USB flash drive since this will wipe everything on your drive of choice
 
