@@ -33,7 +33,7 @@ Current features being developed:
 
 -Ensure you have QEMU installed
 
--Install the i386-elf toolchain (i386-elf-gcc package on the AUR)
+-Install the i686-elf toolchain (i686-elf-gcc package on the AUR)
 
 -Navigate to the C directory and run the shell script ./run; the cross-compiler will automatically compile the OS and QEMU will run it
 
