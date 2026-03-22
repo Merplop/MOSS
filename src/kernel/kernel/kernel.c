@@ -15,6 +15,10 @@
 #include <moss/commands.h>
 #include <sys/multiboot.h>
 
+/* Arch-specific interrupt and timer support */
+void idt_init(void);
+void timer_init(uint32_t frequency);
+
 /* --- Global variable definitions (declared extern in kernel.h) --- */
 
 const char KERNEL_PANIC_ERROR[] = "ERROR 00 - Kernel panic error\r\n";
@@ -89,6 +93,11 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	/* Create and admit the shell task (pid 1 equivalent) */
 	task_t shell_task = task_create(DEFAULT_PRIORITY);
 	admit_task(&shell_task);
+
+	/* Set up the IDT and PIT before enabling interrupts */
+	idt_init();
+	timer_init(100);  /* 100 Hz tick rate */
+	asm volatile ("sti");  /* enable hardware interrupts */
 
 	terminal_initialize();
 	disable_cursor();
