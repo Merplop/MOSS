@@ -44,9 +44,3 @@ Current features being developed:
 -Run the command 'sudo dd if=moss.iso of=/dev/sdx && sync'
 
 -Ensure you are booting onto the drive in EFI/legacy mode, as UEFI mode doesn't support VGA text mode correctly.
-
-# Note about Assembly version
-
-I have decided to keep the source code for the old x86-Assembly kernel in this repo, but that version is officially deprecated.
-If you still wish to run it, however, you can navigate to the bin directory, run make MOSS, run bochs, hit '6', and hit 'c'. The
-functionality of this version is, however, severely limited and was written when I was in high school.
