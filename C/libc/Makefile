@@ -42,6 +42,8 @@ string/strlen.o \
 moss/commands/reb.o \
 moss/commands/hlt.o \
 moss/commands/colour.o \
+liballoc/liballoc.o \
+liballoc/liballoc_hooks.o \
 
 HOSTEDOBJS=\
 $(ARCH_HOSTEDOBJS) \

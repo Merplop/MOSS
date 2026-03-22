@@ -33,6 +33,11 @@ LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
+kernel/fs.o \
+kernel/commands.o \
+kernel/shell.o \
+kernel/sound.o \
+sched/sched.o \
 
 #KERNEL_LIBS_SRC=\
 #$(wildcard software/*.c) \
