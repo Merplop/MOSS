@@ -18,6 +18,7 @@
 /* Arch-specific interrupt and timer support */
 void idt_init(void);
 void timer_init(uint32_t frequency);
+void paging_init(uint32_t mem_size_kb);
 
 /* --- Global variable definitions (declared extern in kernel.h) --- */
 
@@ -82,7 +83,45 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	memcpy(&fileNames[0], "root", strlen("root"));
 	dirs[0].size = 0;
 
-	/* Initialize the round-robin scheduler */
+	/* Validate multiboot info before using it */
+	if(magic != MULTIBOOT_BOOTLOADER_MAGIC) {
+		change_colour(7, 0);
+		terminal_initialize();
+		printf(KERNEL_PANIC_ERROR);
+		printf("Invalid magic number!\r\n");
+		panic();
+	}
+
+	if(!(mbd->flags >> 6 & 0x1)) {
+		change_colour(7, 0);
+		terminal_initialize();
+		printf(KERNEL_PANIC_ERROR);
+		printf("Invalid memory map given by GRUB bootloader\r\n");
+		panic();
+	}
+
+	/* Set up the IDT and PIT before enabling interrupts */
+	idt_init();
+	timer_init(100);  /* 100 Hz tick rate */
+
+	/* Initialize memory manager before anything that calls malloc */
+	initialize_memory_manager(mbd->mmap_addr, mbd->mmap_length);
+
+	int i;
+	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
+		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
+		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
+			initialize_memory_region(mmmt->addr, mmmt->len);
+		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
+			deinitialize_memory_region(mmmt->addr, mmmt->len);
+		}
+	}
+
+	/* Enable paging with identity mapping for all available physical RAM.
+	 * mem_upper is KiB above 1 MiB; add 1024 KiB for conventional memory. */
+	paging_init(mbd->mem_upper + 1024);
+
+	/* Initialize the round-robin scheduler (needs malloc → memory manager) */
 	init_scheduler();
 
 	/* Create and admit the kernel system task (pid 0 equivalent) */
@@ -94,9 +133,6 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	task_t shell_task = task_create(DEFAULT_PRIORITY);
 	admit_task(&shell_task);
 
-	/* Set up the IDT and PIT before enabling interrupts */
-	idt_init();
-	timer_init(100);  /* 100 Hz tick rate */
 	asm volatile ("sti");  /* enable hardware interrupts */
 
 	terminal_initialize();
@@ -113,21 +149,8 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		printf(version);
 		printf(welcome2);
 	}
-	if(magic != MULTIBOOT_BOOTLOADER_MAGIC) {
-		printf(KERNEL_PANIC_ERROR);
-		printf("Invalid magic number!\r\n");
-		panic();
-	}
-
-	if(!(mbd->flags >> 6 & 0x1)) {
-		printf(KERNEL_PANIC_ERROR);
-		printf("Invalid memory map given by GRUB bootloader\r\n");
-		panic();
-	}
-	initialize_memory_manager(mbd->mmap_addr, mbd->mmap_length);
 
 	printf("MEMORY MAP:\r\n");
-	int i;
 	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
 		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
 
@@ -140,10 +163,8 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		printf(" | Type : \0");
 		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
 			printf("Available\0");
-			initialize_memory_region(mmmt->addr, mmmt->len);
 		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
 			printf("Reserved\0");
-			deinitialize_memory_region(mmmt->addr, mmmt->len);
 		} else if (mmmt->type == MULTIBOOT_MEMORY_ACPI_RECLAIMABLE) {
 			printf("ACPI-Reclaimable\0");
 		} else if (mmmt->type == MULTIBOOT_MEMORY_NVS) {

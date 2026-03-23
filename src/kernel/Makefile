@@ -33,10 +33,12 @@ LIBS:=$(LIBS) $(KERNEL_ARCH_LIBS)
 KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
+kernel/keyboard.o \
 kernel/fs.o \
 kernel/commands.o \
 kernel/shell.o \
 kernel/sound.o \
+kernel/memory_manager.o \
 sched/sched.o \
 
 #KERNEL_LIBS_SRC=\
