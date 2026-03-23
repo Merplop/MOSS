@@ -6,4 +6,4 @@ arch/i386/tty.o: arch/i386/tty.c \
  /home/miro/Source/MOSS/src/sysroot/usr/include/string.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/sys/cdefs.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/sys/io.h \
- include/kernel/tty.h arch/i386/vga.h
+ include/kernel/tty.h arch/i386/framebuffer.h arch/i386/font8x16.h

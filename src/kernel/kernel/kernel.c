@@ -18,7 +18,20 @@
 /* Arch-specific interrupt and timer support */
 void idt_init(void);
 void timer_init(uint32_t frequency);
-void paging_init(uint32_t mem_size_kb);
+void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size);
+
+/* Framebuffer support */
+typedef struct {
+    uint8_t  *address;
+    uint32_t  width;
+    uint32_t  height;
+    uint32_t  pitch;
+    uint8_t   bpp;
+    uint8_t   red_pos, red_size;
+    uint8_t   green_pos, green_size;
+    uint8_t   blue_pos, blue_size;
+} framebuffer_info_t;
+void framebuffer_init(framebuffer_info_t *info);
 
 /* --- Global variable definitions (declared extern in kernel.h) --- */
 
@@ -79,26 +92,45 @@ void panic(void) {
 }
 
 void _main(multiboot_info_t* mbd, unsigned int magic) {
-	change_colour(7, 1);
-	memcpy(&fileNames[0], "root", strlen("root"));
-	dirs[0].size = 0;
-
-	/* Validate multiboot info before using it */
+	/* Validate multiboot before anything else.
+	 * We cannot print yet (no framebuffer), so just halt on failure. */
 	if(magic != MULTIBOOT_BOOTLOADER_MAGIC) {
-		change_colour(7, 0);
-		terminal_initialize();
-		printf(KERNEL_PANIC_ERROR);
-		printf("Invalid magic number!\r\n");
 		panic();
 	}
 
 	if(!(mbd->flags >> 6 & 0x1)) {
-		change_colour(7, 0);
-		terminal_initialize();
-		printf(KERNEL_PANIC_ERROR);
-		printf("Invalid memory map given by GRUB bootloader\r\n");
 		panic();
 	}
+
+	/* Extract framebuffer info from multiboot.
+	 * GRUB should have set a 1920x1080x32 linear framebuffer for us. */
+	if(!(mbd->flags & MULTIBOOT_INFO_FRAMEBUFFER_INFO) ||
+	    mbd->framebuffer_type != MULTIBOOT_FRAMEBUFFER_TYPE_RGB) {
+		panic();
+	}
+
+	framebuffer_info_t fb_info;
+	fb_info.address   = (uint8_t *)(uint32_t)mbd->framebuffer_addr;
+	fb_info.width     = mbd->framebuffer_width;
+	fb_info.height    = mbd->framebuffer_height;
+	fb_info.pitch     = mbd->framebuffer_pitch;
+	fb_info.bpp       = mbd->framebuffer_bpp;
+	fb_info.red_pos   = mbd->framebuffer_red_field_position;
+	fb_info.red_size  = mbd->framebuffer_red_mask_size;
+	fb_info.green_pos = mbd->framebuffer_green_field_position;
+	fb_info.green_size= mbd->framebuffer_green_mask_size;
+	fb_info.blue_pos  = mbd->framebuffer_blue_field_position;
+	fb_info.blue_size = mbd->framebuffer_blue_mask_size;
+
+	/* Initialize framebuffer driver (physical access, no paging yet) */
+	framebuffer_init(&fb_info);
+
+	/* Now the terminal works */
+	terminal_initialize();
+	change_colour(7, 1);
+
+	memcpy(&fileNames[0], "root", strlen("root"));
+	dirs[0].size = 0;
 
 	/* Set up the IDT and PIT before enabling interrupts */
 	idt_init();
@@ -117,9 +149,12 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		}
 	}
 
-	/* Enable paging with identity mapping for all available physical RAM.
+	/* Enable paging with identity mapping for all available physical RAM
+	 * AND the framebuffer (which lives at a high physical address).
 	 * mem_upper is KiB above 1 MiB; add 1024 KiB for conventional memory. */
-	paging_init(mbd->mem_upper + 1024);
+	uint32_t fb_phys = (uint32_t)mbd->framebuffer_addr;
+	uint32_t fb_size = mbd->framebuffer_pitch * mbd->framebuffer_height;
+	paging_init(mbd->mem_upper + 1024, fb_phys, fb_size);
 
 	/* Initialize the round-robin scheduler (needs malloc → memory manager) */
 	init_scheduler();

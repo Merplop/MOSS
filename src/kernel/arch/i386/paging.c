@@ -24,7 +24,7 @@
  * 64 tables × 4 MiB each = 256 MiB of identity-mappable RAM.
  * BSS cost: 64 × 4 KiB = 256 KiB (no disk overhead).
  */
-#define MAX_STATIC_TABLES 64
+#define MAX_STATIC_TABLES 128
 
 /* ------------------------------------------------------------------ */
 /*  Static storage – all page-aligned, lives in BSS                   */
@@ -170,7 +170,7 @@ uint32_t paging_get_physical(uint32_t virt)
 /*  Initialization                                                    */
 /* ------------------------------------------------------------------ */
 
-void paging_init(uint32_t mem_size_kb)
+void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size)
 {
     uint32_t mem_bytes = mem_size_kb * 1024;
 
@@ -208,6 +208,16 @@ void paging_init(uint32_t mem_size_kb)
         }
 
         kernel_page_dir[t] = ((uint32_t)table) | PDE_PRESENT | PDE_WRITABLE;
+    }
+
+    /* Identity-map the framebuffer (video RAM at a high physical address).
+     * This must happen before enabling paging so the terminal keeps working. */
+    if (fb_phys && fb_size) {
+        uint32_t fb_start = fb_phys & ~(PAGE_SIZE - 1);
+        uint32_t fb_end   = fb_phys + fb_size;
+        for (uint32_t addr = fb_start; addr < fb_end; addr += PAGE_SIZE) {
+            paging_map_page(addr, addr, PTE_WRITABLE);
+        }
     }
 
     /* Register the page-fault handler before enabling paging. */

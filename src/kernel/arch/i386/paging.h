@@ -25,8 +25,9 @@
 #define PDE_ACCESSED     0x020
 #define PDE_PAGESIZE     0x080  /* 4 MiB pages (requires PSE) */
 
-/* Initialize paging with identity mapping for mem_size_kb kilobytes. */
-void paging_init(uint32_t mem_size_kb);
+/* Initialize paging with identity mapping for mem_size_kb kilobytes of RAM,
+ * plus an additional identity mapping for the framebuffer at fb_phys. */
+void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size);
 
 /* Map a single 4 KiB page: virtual_addr -> physical_addr with flags. */
 void paging_map_page(uint32_t virtual_addr, uint32_t physical_addr,

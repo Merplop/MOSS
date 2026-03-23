@@ -1,7 +1,8 @@
 # Declare constants for the multiboot header.
 .set ALIGN,    1<<0             # align loaded modules on page boundaries
 .set MEMINFO,  1<<1             # provide memory map
-.set FLAGS,    ALIGN | MEMINFO  # this is the Multiboot 'flag' field
+.set VIDMODE,  1<<2             # request video mode from bootloader
+.set FLAGS,    ALIGN | MEMINFO | VIDMODE
 .set MAGIC,    0x1BADB002       # 'magic number' lets bootloader find the header
 .set CHECKSUM, -(MAGIC + FLAGS) # checksum of above, to prove we are multiboot
 
@@ -11,6 +12,17 @@
 .long MAGIC
 .long FLAGS
 .long CHECKSUM
+# Address fields (offsets 12-28, must be present for video fields at offset 32)
+.long 0              # header_addr   (unused, no AOUT_KLUDGE)
+.long 0              # load_addr
+.long 0              # load_end_addr
+.long 0              # bss_end_addr
+.long 0              # entry_addr
+# Video mode request (offset 32-44)
+.long 0              # mode_type: 0 = linear graphics framebuffer
+.long 1920           # width  (pixels)
+.long 1080           # height (pixels)
+.long 32             # depth  (bits per pixel)
 
 # Reserve a stack for the initial thread.
 .section .bss
