@@ -1,4 +1,16 @@
-# MOSS (Miro's Open Source System); latest release: v1.1beta
+# MOSS (Miro's Open Source System); latest release: 2.0beta
+
+Release notes: v2.0beta
+
+-Virtual memory and Paging
+
+-ISR/IDT
+
+-1080p resolution
+
+-Round-robin scheduling
+
+Starting to look like an actual, usable kernel.
 
 Release notes: v1.1beta
 
