@@ -33,6 +33,17 @@ void isr_register_handler(uint8_t n, isr_handler_t handler) {
  * For IRQs (int_no 32-47) we send the EOI to the PIC.
  */
 void isr_handler(struct isr_regs *regs) {
+    /*
+     * Send EOI early for hardware IRQs.  This is necessary because
+     * the timer handler may context-switch away via schedule(),
+     * and the interrupted task's call chain won't return through
+     * here until it is scheduled again.  Sending EOI first ensures
+     * the PIC can deliver further interrupts.
+     */
+    if (regs->int_no >= 32 && regs->int_no < 48) {
+        pic_send_eoi((uint8_t)(regs->int_no - 32));
+    }
+
     if (isr_handlers[regs->int_no]) {
         isr_handlers[regs->int_no](regs);
     } else if (regs->int_no < 32) {
@@ -55,11 +66,6 @@ void isr_handler(struct isr_regs *regs) {
         print_hex(regs->err_code);
         printf("\r\n");
         panic();
-    }
-
-    /* Send EOI for hardware IRQs */
-    if (regs->int_no >= 32 && regs->int_no < 48) {
-        pic_send_eoi((uint8_t)(regs->int_no - 32));
     }
 }
 

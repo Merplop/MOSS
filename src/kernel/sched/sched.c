@@ -6,29 +6,112 @@
 #include <liballoc.h>
 #include <kernel/sched.h>
 
+/*
+ * Static pool for scheduler nodes and task stacks.
+ *
+ * The kernel's physical memory manager (allocate_blocks) is initialised
+ * with mbd->mmap_length which is the size of the GRUB memory-map
+ * *buffer* — typically ~100 bytes — so max_blocks ends up 0 and every
+ * allocation via malloc / allocate_blocks returns NULL.
+ *
+ * Until the memory manager is fixed, we use small BSS pools so the
+ * scheduler can function without any dynamic allocation.
+ */
+#define MAX_STATIC_TASKS 16
+
 typedef struct sched_list_s {
     task_t t;
     struct sched_list_s *next;
     struct sched_list_s *prev;
 } sched_list_t;
 
+static sched_list_t  static_nodes[MAX_STATIC_TASKS];
+static int           static_nodes_used = 0;
+
+static uint8_t static_stacks[MAX_STATIC_TASKS][TASK_STACK_SIZE]
+    __attribute__((aligned(16)));
+static int     static_stacks_used = 0;
+
 static sched_list_t *sched_list_head = NULL;
 static sched_list_t *current_node = NULL;
 static int task_count = 0;
+static uint32_t next_pid = 0;
+
+/*
+ * Trampoline for newly created tasks.
+ * switch_context's `ret` lands here on the first run of a task.
+ * We enable interrupts (the switch happened inside an IRQ handler
+ * where IF was cleared) and call the task's real entry function.
+ */
+static void task_trampoline(void) {
+    asm volatile("sti");
+    task_t *self = get_current_task();
+    if (self && self->entry)
+        self->entry();
+    exit_task(0);
+    for (;;) asm volatile("hlt");
+}
 
 void init_scheduler(void) {
     sched_list_head = NULL;
     current_node = NULL;
     task_count = 0;
+    next_pid = 0;
 }
 
-task_t task_create(long priority) {
+/*
+ * Create a new task.
+ *   entry != NULL  →  allocate a kernel stack and set up the initial
+ *                      context so switch_context will "return" into
+ *                      task_trampoline, which calls entry().
+ *   entry == NULL  →  boot / idle task that already owns the current
+ *                      stack.  Its esp will be filled in the first
+ *                      time switch_context saves it.
+ */
+task_t task_create(void (*entry)(void), long priority) {
     task_t t;
-    t.state = TASK_READY;
-    t.counter = (priority > 0) ? priority : DEFAULT_QUANTUM;
+    t.pid      = next_pid++;
+    t.state    = TASK_READY;
+    t.counter  = (priority > 0) ? priority : DEFAULT_QUANTUM;
     t.priority = (priority > 0) ? priority : DEFAULT_PRIORITY;
-    t.signal = 0;
+    t.signal   = 0;
     t.exit_code = 0;
+    t.entry    = entry;
+
+    if (entry) {
+        /* Grab a kernel stack from the static pool */
+        if (static_stacks_used >= MAX_STATIC_TASKS) {
+            /* No stacks left — return a task that will never run */
+            t.stack = NULL;
+            t.esp   = 0;
+            return t;
+        }
+        t.stack = (uint32_t *)static_stacks[static_stacks_used++];
+
+        /*
+         * Build the initial stack frame that switch_context expects.
+         *
+         *   top of block  → [dummy ret addr]   (ABI alignment padding)
+         *                   [task_trampoline]   ← switch_context's `ret`
+         *                   [0]                 ← ebp
+         *                   [0]                 ← ebx
+         *                   [0]                 ← esi
+         *                   [0]                 ← edi  ← initial ESP
+         */
+        uint32_t *sp = (uint32_t *)((uint32_t)t.stack + TASK_STACK_SIZE);
+        *(--sp) = 0;                              /* dummy return addr   */
+        *(--sp) = (uint32_t)task_trampoline;      /* ret destination     */
+        *(--sp) = 0;   /* ebp */
+        *(--sp) = 0;   /* ebx */
+        *(--sp) = 0;   /* esi */
+        *(--sp) = 0;   /* edi */
+        t.esp = (uint32_t)sp;
+    } else {
+        /* Boot task — uses the current stack */
+        t.stack = NULL;
+        t.esp   = 0;
+    }
+
     return t;
 }
 
@@ -43,12 +126,18 @@ int get_task_count(void) {
 }
 
 void admit_task(task_t *new_task) {
-    sched_list_t *new_node = (sched_list_t *)malloc(sizeof(sched_list_t));
-    if (new_node == NULL)
-        return;
+    sched_list_t *new_node;
+
+    /* Try the static pool first; fall back to malloc. */
+    if (static_nodes_used < MAX_STATIC_TASKS) {
+        new_node = &static_nodes[static_nodes_used++];
+    } else {
+        new_node = (sched_list_t *)malloc(sizeof(sched_list_t));
+        if (new_node == NULL)
+            return;
+    }
 
     new_node->t = *new_task;
-    new_node->t.state = TASK_READY;
 
     if (sched_list_head == NULL) {
         sched_list_head = new_node;
@@ -83,7 +172,10 @@ void remove_task(task_t *task_to_remove) {
                 if (current_node == node)
                     current_node = node->next;
             }
-            free(node);
+            /* Only free dynamically allocated nodes (not from static pool) */
+            if (node < &static_nodes[0] ||
+                node >= &static_nodes[MAX_STATIC_TASKS])
+                free(node);
             task_count--;
             return;
         }
@@ -91,10 +183,15 @@ void remove_task(task_t *task_to_remove) {
     } while (node != sched_list_head);
 }
 
-/* Pick the next TASK_READY/TASK_RUNNING task in round-robin order. */
+/*
+ * Pick the next TASK_READY task in round-robin order and perform a
+ * context switch if the selected task differs from the current one.
+ */
 void schedule(void) {
     if (sched_list_head == NULL)
         return;
+
+    sched_list_t *prev_node = current_node;
 
     /* If there's a current task that was running, mark it ready */
     if (current_node != NULL && current_node->t.state == TASK_RUNNING)
@@ -109,6 +206,11 @@ void schedule(void) {
             current_node = candidate;
             current_node->t.state = TASK_RUNNING;
             current_node->t.counter = current_node->t.priority;
+
+            /* Perform actual CPU context switch */
+            if (prev_node != NULL && prev_node != current_node)
+                switch_context(&prev_node->t.esp, current_node->t.esp);
+
             return;
         }
         candidate = candidate->next;

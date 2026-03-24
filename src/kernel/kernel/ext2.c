@@ -57,7 +57,7 @@ static uint8_t tmp_blk[4096] __attribute__((aligned(4)));
 static int read_superblock(void)
 {
     /* Superblock is at byte offset 1024 = sector 2 (for 512-byte sectors) */
-    uint8_t buf[1024];
+    static uint8_t buf[1024];
     if (ata_read_sectors((ata_drive_t *)fs.drive, fs.part_lba + 2, 2, buf) != 0)
         return -1;
     memcpy(&fs.sb, buf, sizeof(ext2_superblock_t));
@@ -66,7 +66,7 @@ static int read_superblock(void)
 
 static int write_superblock(void)
 {
-    uint8_t buf[1024];
+    static uint8_t buf[1024];
     memset(buf, 0, sizeof(buf));
     memcpy(buf, &fs.sb, sizeof(ext2_superblock_t));
     return ata_write_sectors((ata_drive_t *)fs.drive, fs.part_lba + 2, 2, buf);
@@ -74,8 +74,17 @@ static int write_superblock(void)
 
 static int read_group_desc(void)
 {
-    if (read_block(fs.bgdt_block, tmp_blk) != 0)
+    printf("DEBUG read_gd: bgdt_block=%d blk_size=%d\r\n",
+           fs.bgdt_block, fs.block_size);
+    if (read_block(fs.bgdt_block, tmp_blk) != 0) {
+        printf("DEBUG read_gd: read_block FAILED\r\n");
         return -1;
+    }
+    /* Dump first 32 bytes of the block to see raw content */
+    printf("DEBUG read_gd raw:");
+    for (int __i = 0; __i < 32; __i++)
+        printf(" %d", (int)tmp_blk[__i]);
+    printf("\r\n");
     memcpy(&fs.gd, tmp_blk, sizeof(ext2_group_desc_t));
     return 0;
 }
@@ -227,6 +236,9 @@ int ext2_read_inode(uint32_t ino, ext2_inode_t *out)
     uint32_t block_offset = index / inodes_per_block;
     uint32_t local_index  = index % inodes_per_block;
     uint32_t block_no = fs.gd.bg_inode_table + block_offset;
+
+//    printf("DEBUG read_inode: ino=%d tbl=%d blk=%d local=%d isz=%d\r\n",
+//           ino, fs.gd.bg_inode_table, block_no, local_index, fs.inode_size);
 
     if (read_block(block_no, tmp_blk) != 0)
         return -1;
@@ -485,10 +497,17 @@ int ext2_readdir(uint32_t dir_ino,
                                   uint32_t inode, uint8_t file_type))
 {
     ext2_inode_t dir;
-    if (ext2_read_inode(dir_ino, &dir) != 0)
+    if (ext2_read_inode(dir_ino, &dir) != 0) {
+        //printf("DEBUG readdir: read_inode(%d) FAILED\r\n", dir_ino);
         return -1;
-    if (!(dir.i_mode & EXT2_S_IFDIR))
+    }
+    //printf("DEBUG readdir: ino=%d mode=%d size=%d blk0=%d\r\n",
+    //       dir_ino, dir.i_mode, dir.i_size, dir.i_block[0]);
+    if (!(dir.i_mode & EXT2_S_IFDIR)) {
+    //    printf("DEBUG readdir: NOT A DIR (mode=%d, expected bit 0x4000=%d)\r\n",
+    //           (int)dir.i_mode, (int)EXT2_S_IFDIR);
         return -1;
+    }
 
     uint32_t offset = 0;
 
@@ -881,7 +900,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
     memcpy(sb.s_volume_name, "MOSS", 4);
 
     /* Write superblock at byte offset 1024 (sector 2) */
-    uint8_t sb_buf[1024];
+    static uint8_t sb_buf[1024];
     memset(sb_buf, 0, sizeof(sb_buf));
     memcpy(sb_buf, &sb, sizeof(sb));
     if (ata_write_sectors((ata_drive_t *)ata_drive, part_lba + 2, 2, sb_buf) != 0)
@@ -898,7 +917,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
     gd.bg_used_dirs_count   = 0;
 
     /* Write BGDT at block 2 */
-    uint8_t bgdt_buf[1024];
+    static uint8_t bgdt_buf[1024];
     memset(bgdt_buf, 0, sizeof(bgdt_buf));
     memcpy(bgdt_buf, &gd, sizeof(gd));
     uint32_t bgdt_lba = part_lba + 2 * 2;  /* block 2 = sector 4 */
@@ -906,7 +925,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
         return -1;
 
     /* Initialize block bitmap – mark metadata blocks as used */
-    uint8_t bbitmap[1024];
+    static uint8_t bbitmap[1024];
     memset(bbitmap, 0, sizeof(bbitmap));
     for (uint32_t i = 0; i < first_data_block; i++) {
         bbitmap[i / 8] |= (1 << (i % 8));
@@ -921,7 +940,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
         return -1;
 
     /* Initialize inode bitmap – mark inode 1 as used (reserved) */
-    uint8_t ibitmap[1024];
+    static uint8_t ibitmap[1024];
     memset(ibitmap, 0, sizeof(ibitmap));
     ibitmap[0] = 0x01;  /* inode 1 reserved */
     uint32_t ibitmap_lba = part_lba + 4 * 2;
@@ -929,7 +948,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
         return -1;
 
     /* Zero the inode table */
-    uint8_t zero_buf[1024];
+    static uint8_t zero_buf[1024];
     memset(zero_buf, 0, sizeof(zero_buf));
     for (uint32_t i = 0; i < inode_table_blocks; i++) {
         uint32_t lba = part_lba + (5 + i) * 2;
@@ -977,7 +996,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
     ext2_write_inode(root_ino, &root);
 
     /* Write . and .. for root (both point to root) */
-    uint8_t root_dir_data[1024];
+    static uint8_t root_dir_data[1024];
     memset(root_dir_data, 0, sizeof(root_dir_data));
 
     ext2_dir_entry_t *dot = (ext2_dir_entry_t *)root_dir_data;
@@ -1055,6 +1074,13 @@ int ext2_init(void *ata_drive, uint32_t part_lba, int format_if_missing)
         printf("[ext2] Failed to read block group descriptor\n");
         return -1;
     }
+
+    printf("DEBUG init: bgdt_blk=%d bbitmap=%d ibitmap=%d itable=%d\r\n",
+           fs.bgdt_block, fs.gd.bg_block_bitmap,
+           fs.gd.bg_inode_bitmap, fs.gd.bg_inode_table);
+    printf("DEBUG init: free_blk=%d free_ino=%d dirs=%d\r\n",
+           fs.gd.bg_free_blocks_count, fs.gd.bg_free_inodes_count,
+           fs.gd.bg_used_dirs_count);
 
     fs_ready = 1;
     return 0;

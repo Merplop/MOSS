@@ -20,7 +20,15 @@ static void ls_print_entry(const char *name, uint8_t name_len,
                            uint32_t inode, uint8_t file_type);
 
 void ls_cmd(void) {
-    ext2_readdir(cwd_ino, ls_print_entry);
+    ext2_fs_t *f = ext2_get_fs();
+    if (!f) {
+        printf("DEBUG: ext2 not ready\r\n");
+        return;
+    }
+    //printf("DEBUG ls: cwd=%d free_ino=%d free_blk=%d\r\n",
+    //       cwd_ino, f->sb.s_free_inodes_count, f->sb.s_free_blocks_count);
+    int rc = ext2_readdir(cwd_ino, ls_print_entry);
+    //printf("DEBUG ls: readdir returned %d\r\n", rc);
 }
 
 /* Callback used by ls_cmd via ext2_readdir */

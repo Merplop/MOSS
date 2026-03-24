@@ -193,17 +193,18 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	}
 	cwd_ino = EXT2_ROOT_INO;
 
-	/* Create and admit the kernel system task (pid 0 equivalent) */
-	task_t sys_task = task_create(DEFAULT_PRIORITY);
-	sys_task.state = TASK_RUNNING;
-	admit_task(&sys_task);
+	/* Create the boot/idle task (pid 0) — uses the current stack */
+	task_t idle_task = task_create(NULL, DEFAULT_PRIORITY);
+	admit_task(&idle_task);
+	get_current_task()->state = TASK_RUNNING;
 
-	/* Create and admit the shell task (pid 1 equivalent) */
-	task_t shell_task = task_create(DEFAULT_PRIORITY);
+	/* Create the shell task (pid 1) — runs start_shell() on its own stack */
+	task_t shell_task = task_create(start_shell, DEFAULT_PRIORITY);
 	admit_task(&shell_task);
 
-	asm volatile ("sti");  /* enable hardware interrupts */
-
+	/* Print the welcome banner while interrupts are still disabled
+	 * so the timer cannot preempt us and switch to the shell before
+	 * initialisation is complete. */
 	change_colour(7, 0);
 	terminal_initialize();
 
@@ -216,8 +217,15 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		printf("WARNING: No disk found - filesystem unavailable\r\n");
 	}
 
-	/* Mark the shell task as the running task and enter its loop */
+	/* Switch to the shell task.  Interrupts are still disabled here;
+	 * the shell's task_trampoline will call sti once it starts. */
 	schedule();
-	start_shell();
+
+	/* Idle loop — reached when no other tasks need the CPU.
+	 * sti + hlt is the standard pattern: sti sets IF but the CPU
+	 * defers interrupt delivery until after the next instruction,
+	 * so hlt executes atomically before any interrupt can fire. */
+	for (;;)
+		asm volatile("sti; hlt");
 }
 
