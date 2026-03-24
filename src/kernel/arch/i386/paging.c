@@ -21,10 +21,10 @@
 
 /*
  * Maximum number of page tables we keep in BSS.
- * 64 tables × 4 MiB each = 256 MiB of identity-mappable RAM.
- * BSS cost: 64 × 4 KiB = 256 KiB (no disk overhead).
+ * 1024 tables × 4 MiB each = full 4 GiB 32-bit address space.
+ * BSS cost: 1024 × 4 KiB = 4 MiB (no disk overhead, acceptable for a kernel).
  */
-#define MAX_STATIC_TABLES 128
+#define MAX_STATIC_TABLES 1024
 
 /* ------------------------------------------------------------------ */
 /*  Static storage – all page-aligned, lives in BSS                   */
@@ -126,7 +126,7 @@ void paging_map_page(uint32_t virt, uint32_t phys, uint32_t flags)
     if (!(kernel_page_dir[dir_idx] & PDE_PRESENT)) {
         uint32_t *new_table = alloc_static_table();
         if (!new_table) {
-            printf("paging: no free page tables\r\n");
+            printf("[PANIC] paging: no free page tables\r\n");
             panic();
         }
 
@@ -172,11 +172,18 @@ uint32_t paging_get_physical(uint32_t virt)
 
 void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size)
 {
-    uint32_t mem_bytes = mem_size_kb * 1024;
+    /*
+     * Cap at the 32-bit address-space limit.  With >=4 GiB of physical
+     * RAM, mem_size_kb * 1024 overflows uint32_t, so clamp first.
+     */
+    uint32_t mem_bytes;
+    if (mem_size_kb >= 0x400000)               /* >= 4 GiB in KiB */
+        mem_bytes = 0xFFFFF000;                /* ~4 GiB, page-aligned */
+    else
+        mem_bytes = mem_size_kb * 1024;
 
-    /* Sensible default if the value looks bogus. */
     if (mem_bytes == 0)
-        mem_bytes = 16 * 1024 * 1024;          /* 16 MiB */
+        mem_bytes = 16 * 1024 * 1024;          /* 16 MiB fallback */
 
     /* Clear the page directory and tracking arrays. */
     memset(kernel_page_dir, 0, sizeof(kernel_page_dir));

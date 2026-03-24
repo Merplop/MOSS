@@ -7,11 +7,6 @@
 #include <sys/io.h>
 #include "pic.h"
 
-/* Small I/O wait by writing to an unused port. */
-static inline void io_wait(void) {
-    outb(0x80, 0);
-}
-
 void pic_remap(uint8_t offset_master, uint8_t offset_slave) {
     uint8_t mask1, mask2;
 

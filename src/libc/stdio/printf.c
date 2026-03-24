@@ -81,15 +81,24 @@ int printf(const char* restrict format, ...) {
 			char str[20];
 			int i = 0;
 			int val = va_arg(parameters, int);
+			int negative = 0;
+			if (val < 0) {
+				negative = 1;
+				val = -val;
+			}
 			if (val == 0) {
 				str[0] = '0';
 				i++;
-			 } else {
+			} else {
 				while (val != 0) {
 					str[i] = val%10 + '0';
 					val /= 10;
 					i++;
-				} 
+				}
+			}
+			if (negative) {
+				str[i] = '-';
+				i++;
 			}
 			str[i] = '\0';
 			i = 0;
@@ -103,9 +112,8 @@ int printf(const char* restrict format, ...) {
 			}
 			if (!print(str, strlen(str))) {
 				return -1;
-			} 
+			}
 			written += strlen(str);
-			format += strlen(str);
 
 		} else {
 			format = format_begun_at;

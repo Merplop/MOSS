@@ -7,10 +7,10 @@
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
 #include <kernel/kernel.h>
+#include <kernel/ext2.h>
 #include <moss/commands.h>
 
-extern char fileNames[1024][32];
-extern uint32_t currentInode;
+extern uint32_t cwd_ino;
 extern int colour_scheme[];
 extern int custom_colour_scheme;
 
@@ -22,6 +22,7 @@ extern void cd_cmd(void);
 extern void mv_cmd(void);
 extern void rm_cmd(void);
 extern void cat_cmd(void);
+extern void rmdir_cmd(void);
 
 /* Defined in commands.c */
 extern void shutdown_cmd(void);
@@ -34,15 +35,17 @@ extern void ps_cmd(void);
 extern void text_editor(void);
 extern void run_file(void);
 extern void snake_game(void);
+extern void mmap_cmd(void);
+extern void priv_cmd(void);
 
 /* Defined in sound.c */
 extern void music_player(void);
 extern void nosound(void);
 
-char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown", 
-"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "snake"};
-void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd, 
-colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, snake_game};
+char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown",
+"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "priv", "mmap"};
+void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd,
+colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, priv_cmd, mmap_cmd};
 
 void language_prompt(void) {
 	printf(language_spacer_top);
@@ -89,14 +92,12 @@ void start_shell(void) {
 		argc = 0;
 		if (custom_colour_scheme == 0) {
 			change_colour_current(3, 0);
-			printf(fileNames[currentInode]);
-			printf(":/");
+			printf("/");
 			change_colour_current(15, 0);
 			printf(prompt);
 			change_colour_current(7, 0); 
 		} else {
-			printf(fileNames[currentInode]);
-			printf(":/");
+			printf("/");
 			printf(prompt);
 		}
 		while(1) {

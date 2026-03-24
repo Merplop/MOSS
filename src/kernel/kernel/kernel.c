@@ -10,6 +10,7 @@
 #include <kernel/kernel.h>
 #include <kernel/memory_manager.h>
 #include <kernel/sched.h>
+#include <kernel/ext2.h>
 #include <sys/io.h>
 #include <sys/sleep.h>
 #include <moss/commands.h>
@@ -19,6 +20,11 @@
 void idt_init(void);
 void timer_init(uint32_t frequency);
 void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size);
+
+/* ATA disk driver */
+void ata_init(void);
+struct ata_drive;
+void *ata_get_drive(int index);
 
 /* Framebuffer support */
 typedef struct {
@@ -45,13 +51,10 @@ const char FILE_EXISTS_ERROR[] = "ERROR 06 - File already exists\r\n";
 const char FILE_NOT_FOUND_ERROR[] = "ERROR 07 - File not found\r\n";
 const char FILE_EMPTY_ERROR[] = "ERROR 08 - File is empty\r\n";
 const char DIR_NOT_FOUND_ERROR[] = "ERROR 09 - Directory not found\r\n";
-const char KERNEL_ERROR_FIN[] = "VIRHE 00 - Kerneli-paniikki\r\n";
-const char CMD_ERROR_FIN[] = {'V','I','R','H','E',' ','0','1',' ','-',' ','k','o','m','e','n','t','o','a',' ','e','i',' ','l',148,'y','t','y','n','y','t','\r','\n'};
-const char ARG_COUNT_ERROR_FIN[] = {'V','I','R','H','E',' ','0','2',' ','-',' ','V',132,132,'r',132,' ','m',132,132,' ','r',132,' ','a','r','g','u','m','e','n','t','t','e','j','a','\r','\n'};
+const char DISK_ERROR[] = "ERROR 10 - Disk I/O error\r\n";
 
-const char version[] = "Beta 1.1";
+const char version[] = "Beta 2.0";
 const char welcome1_eng[] = "------------------------------\r\nMOSS Kernel - Version ";
-const char welcome1_fin[] = "------------------------------\r\nMOSS-kerneli - Versio ";
 const char welcome2[] = "\r\n------------------------------\r\n";
 const char prompt[] = ">";
 char cmd_str[256];
@@ -74,18 +77,18 @@ const char language_option2[] = "  2. suomi                               ";
 char* arg_token;
 int process_count = 0;
 int current_process;
+int kernel_privilege = 0;
 
-/* --- Filesystem globals --- */
-
-Inode inodeList[1024];
-char fileNames[1024][32];
-mfs_file files[1024];
-mfs_dir dirs[1024];
-size_t inodeCount = 1;
-uint32_t currentInode = 0;
+/* --- ext2 current working directory --- */
+uint32_t cwd_ino = EXT2_ROOT_INO;
 
 int colour_scheme[] = {7, 0};
 int custom_colour_scheme = 0;
+
+/* Saved copy of the GRUB memory map (preserved before the bitmap overwrites it). */
+#define MMAP_BUF_SIZE 512
+uint8_t  g_saved_mmap[MMAP_BUF_SIZE];
+uint32_t g_mmap_len = 0;
 
 void panic(void) {
 	for(;;) {}
@@ -129,19 +132,23 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	terminal_initialize();
 	change_colour(7, 1);
 
-	memcpy(&fileNames[0], "root", strlen("root"));
-	dirs[0].size = 0;
-
 	/* Set up the IDT and PIT before enabling interrupts */
 	idt_init();
 	timer_init(100);  /* 100 Hz tick rate */
 
-	/* Initialize memory manager before anything that calls malloc */
+	/* Initialize memory manager before anything that calls malloc.
+	 * IMPORTANT: initialize_memory_manager places its bitmap at mmap_addr,
+	 * overwriting the GRUB memory map.  Save a copy first. */
+	g_mmap_len = mbd->mmap_length;
+	if (g_mmap_len > MMAP_BUF_SIZE)
+		g_mmap_len = MMAP_BUF_SIZE;
+	memcpy(g_saved_mmap, (void *)mbd->mmap_addr, g_mmap_len);
+
 	initialize_memory_manager(mbd->mmap_addr, mbd->mmap_length);
 
-	int i;
-	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
-		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
+	uint32_t i;
+	for(i = 0; i < g_mmap_len; i += sizeof(multiboot_memory_map_t)) {
+		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (g_saved_mmap + i);
 		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
 			initialize_memory_region(mmmt->addr, mmmt->len);
 		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
@@ -159,6 +166,33 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	/* Initialize the round-robin scheduler (needs malloc → memory manager) */
 	init_scheduler();
 
+	/* Initialize ATA disk driver and ext2 filesystem */
+	ata_init();
+	{
+		/* Try all 4 ATA drive slots to find a usable disk */
+		void *disk = 0;
+		for (int d = 0; d < 4; d++) {
+			disk = ata_get_drive(d);
+			if (disk) {
+				printf("ATA drive %d detected\r\n", d);
+				break;
+			}
+		}
+		if (disk) {
+			/* Try LBA 0 (treat the whole disk as the filesystem).
+			 * ext2_init will format if no valid superblock is found. */
+			int rc = ext2_init(disk, 0, 1);
+			if (rc == 0) {
+				printf("ext2 mounted OK\r\n");
+			} else {
+				printf("ext2 init failed (rc=%d)\r\n", rc);
+			}
+		} else {
+			printf("No ATA drive found\r\n");
+		}
+	}
+	cwd_ino = EXT2_ROOT_INO;
+
 	/* Create and admit the kernel system task (pid 0 equivalent) */
 	task_t sys_task = task_create(DEFAULT_PRIORITY);
 	sys_task.state = TASK_RUNNING;
@@ -170,44 +204,16 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 
 	asm volatile ("sti");  /* enable hardware interrupts */
 
-	terminal_initialize();
-	disable_cursor();
-	language_prompt();
 	change_colour(7, 0);
 	terminal_initialize();
-	if (language == 0) {
-		printf(welcome1_eng);
-		printf(version);
-		printf(welcome2); 
-	} else if (language == 1) {
-		printf(welcome1_fin);
-		printf(version);
-		printf(welcome2);
-	}
 
-	printf("MEMORY MAP:\r\n");
-	for(i = 0; i < mbd->mmap_length; i += sizeof(multiboot_memory_map_t)) {
-		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (mbd->mmap_addr + i);
-
-		printf("Start addr: \0");
-		print_hex(mmmt->addr);
-		printf(" | Length: \0");
-		print_hex(mmmt->len);
-		printf(" | Size: \0");
-		print_hex(mmmt->size);
-		printf(" | Type : \0");
-		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
-			printf("Available\0");
-		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
-			printf("Reserved\0");
-		} else if (mmmt->type == MULTIBOOT_MEMORY_ACPI_RECLAIMABLE) {
-			printf("ACPI-Reclaimable\0");
-		} else if (mmmt->type == MULTIBOOT_MEMORY_NVS) {
-			printf("Non-volatile storage\0");
-		} else if (mmmt->type == MULTIBOOT_MEMORY_BADRAM) {
-			printf("Faulty RAM\0");
-		}
-		printf("\r\n\r\n");
+	printf(welcome1_eng);
+	printf(version);
+	printf(welcome2);
+	if (ext2_get_fs()) {
+		printf("ext2 filesystem ready\r\n");
+	} else {
+		printf("WARNING: No disk found - filesystem unavailable\r\n");
 	}
 
 	/* Mark the shell task as the running task and enter its loop */

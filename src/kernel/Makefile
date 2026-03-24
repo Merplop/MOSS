@@ -39,6 +39,7 @@ kernel/commands.o \
 kernel/shell.o \
 kernel/sound.o \
 kernel/memory_manager.o \
+kernel/ext2.o \
 sched/sched.o \
 
 #KERNEL_LIBS_SRC=\

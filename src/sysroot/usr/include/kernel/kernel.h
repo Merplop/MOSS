@@ -4,9 +4,12 @@
 #include<stdint.h>
 #include<stddef.h>
 
-#define MAX_FILE_SIZE 8192
-#define MAX_DIR_CAPACITY 8192
-#define NUM_COMMANDS 21
+#define NUM_COMMANDS 22
+
+/* Saved GRUB memory map (from kernel.c) */
+#define MMAP_BUF_SIZE 512
+extern uint8_t  g_saved_mmap[MMAP_BUF_SIZE];
+extern uint32_t g_mmap_len;
 #define MAX_ARGS 10
 
 extern const char KERNEL_PANIC_ERROR[];
@@ -19,6 +22,7 @@ extern const char FILE_EXISTS_ERROR[];
 extern const char FILE_NOT_FOUND_ERROR[];
 extern const char FILE_EMPTY_ERROR[];
 extern const char DIR_NOT_FOUND_ERROR[];
+extern const char DISK_ERROR[];
 extern const char KERNEL_ERROR_FIN[];
 extern const char CMD_ERROR_FIN[];
 extern const char ARG_COUNT_ERROR_FIN[];
@@ -49,35 +53,8 @@ extern char* arg_token;
 extern int process_count;
 extern int current_process;
 
-
-typedef struct {
-        char type[3];
-        char name[11];
-        uint8_t data[MAX_FILE_SIZE];
-        uint32_t size;
-        uint16_t creationTime;
-        uint16_t creationDate;
-        uint16_t lastAccessDate;
-        uint16_t lastModTime;
-        uint16_t lastModDate;
-} mfs_file;
-
-typedef struct {
-        char name[11];
-        mfs_file* contents[MAX_DIR_CAPACITY];
-        uint32_t size;
-        uint16_t creationTime;
-        uint16_t creationDate;
-        uint16_t lastAccessDate;
-        uint16_t lastModTime;
-        uint16_t lastModDate;
-} mfs_dir;
-
-typedef struct {
-        uint32_t number;
-        uint32_t parent;
-        char type;
-} Inode;
+/* ext2 current working directory inode number */
+extern uint32_t cwd_ino;
 
 typedef struct process {
         uint32_t pid;
