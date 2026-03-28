@@ -1,0 +1,35 @@
+################################################################
+# mpad — MOSS OS build
+#
+# Produces a statically-linked i386 ELF: "mpad"
+# Uses the MOSS user-space libc (libc.a + crt0.o + user.ld)
+################################################################
+
+CC      = i686-elf-gcc
+LD      = i686-elf-gcc
+
+USERLIBC = userlibc
+
+CFLAGS  = -O2 -g -ffreestanding -nostdlib -Wall -Wextra \
+           -I$(USERLIBC)/include \
+           -Wno-unused-parameter \
+           -std=gnu11
+
+LDFLAGS = -ffreestanding -nostdlib -T $(USERLIBC)/user.ld
+
+OUTPUT  = mpad
+
+OBJS = mpad_moss.o
+
+all: $(OUTPUT)
+
+clean:
+	rm -f $(OBJS) $(OUTPUT)
+
+$(OUTPUT): $(OBJS) $(USERLIBC)/libc.a $(USERLIBC)/crt0.o
+	$(LD) $(LDFLAGS) -o $@ $(USERLIBC)/crt0.o $(OBJS) $(USERLIBC)/libc.a -lgcc
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: all clean

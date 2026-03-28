@@ -11,6 +11,8 @@
 #include <kernel/memory_manager.h>
 #include <kernel/sched.h>
 #include <kernel/ext2.h>
+#include <kernel/blkdev.h>
+#include <kernel/syscall.h>
 #include <sys/io.h>
 #include <sys/sleep.h>
 #include <moss/commands.h>
@@ -21,10 +23,35 @@ void idt_init(void);
 void timer_init(uint32_t frequency);
 void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size);
 
+/* TSS / GDT */
+void tss_init(uint32_t kernel_ss, uint32_t kernel_esp0);
+
 /* ATA disk driver */
 void ata_init(void);
 struct ata_drive;
 void *ata_get_drive(int index);
+uint32_t ata_drive_sector_count(void *drv);
+blkdev_t *ata_get_blkdev(int index);
+
+/* Thin wrapper so kernel.c can read sectors without including ata.h */
+int ata_read_sectors_kern(void *drv, uint32_t lba, uint32_t count, void *buf);
+
+/* Ramdisk */
+void ramdisk_init(ramdisk_t *rd, void *buf, uint32_t size_bytes);
+
+/* MBR partition table structures */
+#define MBR_SIGNATURE    0xAA55
+#define MBR_PART_LINUX   0x83
+#define MBR_PART_COUNT   4
+
+typedef struct {
+    uint8_t  status;
+    uint8_t  chs_first[3];
+    uint8_t  type;
+    uint8_t  chs_last[3];
+    uint32_t lba_start;
+    uint32_t sector_count;
+} __attribute__((packed)) mbr_partition_t;
 
 /* Framebuffer support */
 typedef struct {
@@ -81,6 +108,7 @@ int kernel_privilege = 0;
 
 /* --- ext2 current working directory --- */
 uint32_t cwd_ino = EXT2_ROOT_INO;
+char cwd_path[256] = "/";
 
 int colour_scheme[] = {7, 0};
 int custom_colour_scheme = 0;
@@ -137,23 +165,52 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	timer_init(100);  /* 100 Hz tick rate */
 
 	/* Initialize memory manager before anything that calls malloc.
-	 * IMPORTANT: initialize_memory_manager places its bitmap at mmap_addr,
-	 * overwriting the GRUB memory map.  Save a copy first. */
+	 * Save the GRUB memory map before placing the bitmap. */
 	g_mmap_len = mbd->mmap_length;
 	if (g_mmap_len > MMAP_BUF_SIZE)
 		g_mmap_len = MMAP_BUF_SIZE;
 	memcpy(g_saved_mmap, (void *)mbd->mmap_addr, g_mmap_len);
 
-	initialize_memory_manager(mbd->mmap_addr, mbd->mmap_length);
-
-	uint32_t i;
-	for(i = 0; i < g_mmap_len; i += sizeof(multiboot_memory_map_t)) {
-		multiboot_memory_map_t* mmmt = (multiboot_memory_map_t*) (g_saved_mmap + i);
-		if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE) {
-			initialize_memory_region(mmmt->addr, mmmt->len);
-		} else if (mmmt->type == MULTIBOOT_MEMORY_RESERVED) {
-			deinitialize_memory_region(mmmt->addr, mmmt->len);
+	/* Calculate total physical memory from the GRUB memory map. */
+	extern uint32_t _kernel_end;   /* linker symbol */
+	uint32_t total_ram = 0;
+	{
+		uint32_t i;
+		for (i = 0; i < g_mmap_len; i += sizeof(multiboot_memory_map_t)) {
+			multiboot_memory_map_t *e =
+				(multiboot_memory_map_t *)(g_saved_mmap + i);
+			uint32_t region_end = (uint32_t)(e->addr + e->len);
+			if (region_end > total_ram)
+				total_ram = region_end;
 		}
+		if (total_ram == 0)
+			total_ram = (mbd->mem_upper + 1024) * 1024;
+	}
+
+	/* Place the bitmap right after the kernel image (page-aligned). */
+	uint32_t bitmap_addr = ((uint32_t)&_kernel_end + 0xFFF) & ~0xFFF;
+	initialize_memory_manager(bitmap_addr, total_ram);
+
+	/* Mark available regions as free. */
+	{
+		uint32_t i;
+		for (i = 0; i < g_mmap_len; i += sizeof(multiboot_memory_map_t)) {
+			multiboot_memory_map_t *mmmt =
+				(multiboot_memory_map_t *)(g_saved_mmap + i);
+			if (mmmt->type == MULTIBOOT_MEMORY_AVAILABLE)
+				initialize_memory_region((uint32_t)mmmt->addr,
+				                         (uint32_t)mmmt->len);
+		}
+	}
+
+	/* Protect the kernel image + bitmap from being allocated.
+	 * Everything from 0 to bitmap_end must be marked as used. */
+	{
+		uint32_t bitmap_size = total_ram / BLOCK_SIZE / BLOCKS_PER_BYTE;
+		uint32_t bitmap_end  = bitmap_addr + bitmap_size;
+		uint32_t protect_end = (bitmap_end + BLOCK_SIZE - 1)
+		                       & ~(BLOCK_SIZE - 1);
+		deinitialize_memory_region(0, protect_end);
 	}
 
 	/* Enable paging with identity mapping for all available physical RAM
@@ -163,32 +220,115 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	uint32_t fb_size = mbd->framebuffer_pitch * mbd->framebuffer_height;
 	paging_init(mbd->mem_upper + 1024, fb_phys, fb_size);
 
+	/* Set up the full GDT with ring-3 segments and TSS.
+	 * Pass the kernel data segment (0x10) and a temporary ESP0;
+	 * the scheduler will update ESP0 on every context switch. */
+	{
+		uint32_t esp_now;
+		asm volatile("movl %%esp, %0" : "=r"(esp_now));
+		tss_init(0x10, esp_now);
+	}
+
 	/* Initialize the round-robin scheduler (needs malloc → memory manager) */
 	init_scheduler();
 
-	/* Initialize ATA disk driver and ext2 filesystem */
-	ata_init();
-	{
-		/* Try all 4 ATA drive slots to find a usable disk */
-		void *disk = 0;
-		for (int d = 0; d < 4; d++) {
-			disk = ata_get_drive(d);
-			if (disk) {
-				printf("ATA drive %d detected\r\n", d);
-				break;
+	/* Initialize syscall infrastructure (int 0x80) */
+	syscall_init();
+
+	/* Initialize interrupt-driven PS/2 keyboard (IRQ1) */
+	keyboard_init();
+
+	/* ---- Filesystem initialisation ----
+	 * Priority:
+	 *   1. GRUB module → load as ramdisk (works on USB / any hardware)
+	 *   2. ATA drives → probe for existing ext2 (works in QEMU)
+	 */
+	ata_init();  /* always probe ATA so 'disks' command works */
+	static ramdisk_t g_ramdisk;   /* static so it lives forever */
+	int fs_mounted = 0;
+
+	/* Check for a GRUB multiboot module (the ext2 disk image) */
+	if ((mbd->flags & MULTIBOOT_INFO_MODS) && mbd->mods_count > 0) {
+		multiboot_module_t *mod = (multiboot_module_t *)mbd->mods_addr;
+		uint32_t mod_size = mod->mod_end - mod->mod_start;
+		printf("GRUB module: %d bytes at 0x%x\r\n", mod_size, mod->mod_start);
+
+		/* Protect module memory from the physical allocator */
+		deinitialize_memory_region(mod->mod_start,
+		                           (mod_size + BLOCK_SIZE - 1) & ~(BLOCK_SIZE - 1));
+
+		ramdisk_init(&g_ramdisk, (void *)mod->mod_start, mod_size);
+		int rc = ext2_init(&g_ramdisk.dev, 0, 0);
+		if (rc == 0) {
+			printf("ext2 mounted from ramdisk\r\n");
+			fs_mounted = 1;
+		} else {
+			/* Module exists but has no valid ext2 — format it */
+			printf("Formatting ramdisk as ext2...\r\n");
+			rc = ext2_format(&g_ramdisk.dev, 0, g_ramdisk.dev.sector_count);
+			if (rc == 0) {
+				printf("ext2 ramdisk ready\r\n");
+				fs_mounted = 1;
 			}
 		}
-		if (disk) {
-			/* Try LBA 0 (treat the whole disk as the filesystem).
-			 * ext2_init will format if no valid superblock is found. */
-			int rc = ext2_init(disk, 0, 1);
-			if (rc == 0) {
-				printf("ext2 mounted OK\r\n");
-			} else {
-				printf("ext2 init failed (rc=%d)\r\n", rc);
+	}
+
+	/* If no ramdisk, try ATA drives */
+	if (!fs_mounted) {
+		int found_any = 0;
+		for (int d = 0; d < 4; d++) {
+			blkdev_t *bdev = ata_get_blkdev(d);
+			if (bdev) {
+				printf("ATA drive %d: %d MiB\r\n", d,
+				       bdev->sector_count / 2048);
+				found_any = 1;
 			}
-		} else {
-			printf("No ATA drive found\r\n");
+		}
+
+		/* Scan drives for an existing MOSS ext2 filesystem.
+		 * NEVER auto-format — this protects real hardware drives.
+		 * Check both raw (LBA 0) and MBR partitions of type 0x83. */
+		for (int d = 0; d < 4 && !fs_mounted; d++) {
+			blkdev_t *bdev = ata_get_blkdev(d);
+			if (!bdev) continue;
+
+			/* First try raw ext2 at LBA 0 (QEMU / unpartitioned disks) */
+			int rc = ext2_init(bdev, 0, 0);
+			if (rc == 0) {
+				printf("ext2 mounted from ATA drive %d (raw)\r\n", d);
+				fs_mounted = 1;
+				break;
+			}
+
+			/* Check for MBR partition table */
+			static uint8_t mbr_buf[512];
+			if (bdev->read_sectors(bdev, 0, 1, mbr_buf) != 0)
+				continue;
+
+			uint16_t sig = *(uint16_t *)(mbr_buf + 510);
+			if (sig != MBR_SIGNATURE)
+				continue;
+
+			mbr_partition_t *parts = (mbr_partition_t *)(mbr_buf + 446);
+			for (int p = 0; p < MBR_PART_COUNT && !fs_mounted; p++) {
+				if (parts[p].type != MBR_PART_LINUX)
+					continue;
+				if (parts[p].lba_start == 0 || parts[p].sector_count == 0)
+					continue;
+				rc = ext2_init(bdev, parts[p].lba_start, 0);
+				if (rc == 0) {
+					printf("ext2 mounted from ATA drive %d partition %d (LBA %d)\r\n",
+					       d, p + 1, parts[p].lba_start);
+					fs_mounted = 1;
+				}
+			}
+		}
+		if (!fs_mounted && found_any) {
+			printf("No MOSS ext2 filesystem found.\r\n");
+			printf("Use 'disks' to list drives, 'mkfs <n>' to format.\r\n");
+		} else if (!found_any && !fs_mounted) {
+			printf("No ATA drives found.\r\n");
+			printf("If booting from USB, add a GRUB module.\r\n");
 		}
 	}
 	cwd_ino = EXT2_ROOT_INO;

@@ -3,8 +3,13 @@
 * Miro Haapalainen, 2026
 */
 
+#include <string.h>
+#define _ALLOC_SKIP_DEFINE
 #include <liballoc.h>
 #include <kernel/sched.h>
+
+/* Update the TSS kernel stack on every context switch. */
+extern void tss_set_kernel_stack(uint32_t esp0);
 
 /*
  * Static pool for scheduler nodes and task stacks.
@@ -77,6 +82,20 @@ task_t task_create(void (*entry)(void), long priority) {
     t.signal   = 0;
     t.exit_code = 0;
     t.entry    = entry;
+    t.brk_start   = 0;
+    t.brk_current = 0;
+
+    /* Initialize file descriptor table */
+    memset(t.fd_table, 0, sizeof(t.fd_table));
+    /* fd 0 = stdin */
+    t.fd_table[0].type  = FD_TYPE_STDIN;
+    t.fd_table[0].flags = FD_FLAG_USED | FD_FLAG_READABLE;
+    /* fd 1 = stdout */
+    t.fd_table[1].type  = FD_TYPE_STDOUT;
+    t.fd_table[1].flags = FD_FLAG_USED | FD_FLAG_WRITABLE;
+    /* fd 2 = stderr */
+    t.fd_table[2].type  = FD_TYPE_STDERR;
+    t.fd_table[2].flags = FD_FLAG_USED | FD_FLAG_WRITABLE;
 
     if (entry) {
         /* Grab a kernel stack from the static pool */
@@ -208,8 +227,14 @@ void schedule(void) {
             current_node->t.counter = current_node->t.priority;
 
             /* Perform actual CPU context switch */
-            if (prev_node != NULL && prev_node != current_node)
+            if (prev_node != NULL && prev_node != current_node) {
+                /* Point TSS.esp0 at the top of the new task's kernel stack
+                 * so interrupts from ring 3 land on the right stack. */
+                if (current_node->t.stack != NULL)
+                    tss_set_kernel_stack((uint32_t)current_node->t.stack
+                                         + TASK_STACK_SIZE);
                 switch_context(&prev_node->t.esp, current_node->t.esp);
+            }
 
             return;
         }

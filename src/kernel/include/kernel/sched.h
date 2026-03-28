@@ -14,6 +14,32 @@
 #define DEFAULT_PRIORITY     5
 #define TASK_STACK_SIZE      16384
 
+/* ------------------------------------------------------------------ */
+/*  Per-process file descriptor table                                  */
+/* ------------------------------------------------------------------ */
+
+#define MAX_OPEN_FILES 16
+
+/* Flags for fd_entry.flags */
+#define FD_FLAG_USED     0x01
+#define FD_FLAG_READABLE 0x02
+#define FD_FLAG_WRITABLE 0x04
+
+/* Special fd types */
+#define FD_TYPE_NONE     0
+#define FD_TYPE_STDIN    1
+#define FD_TYPE_STDOUT   2
+#define FD_TYPE_STDERR   3
+#define FD_TYPE_FILE     4
+
+typedef struct {
+    uint8_t  type;       /* FD_TYPE_* */
+    uint8_t  flags;      /* FD_FLAG_* */
+    uint32_t ino;        /* ext2 inode number (for FD_TYPE_FILE) */
+    uint32_t offset;     /* current file offset */
+    uint32_t file_size;  /* cached file size at open time */
+} fd_entry_t;
+
 typedef struct task_s {
     uint32_t esp;            /* saved stack pointer */
     uint32_t pid;
@@ -24,6 +50,9 @@ typedef struct task_s {
     int exit_code;
     uint32_t *stack;         /* base of allocated kernel stack (NULL for boot task) */
     void (*entry)(void);     /* entry function for new tasks */
+    uint32_t brk_start;      /* initial program break (page-aligned end of loaded segments) */
+    uint32_t brk_current;    /* current program break */
+    fd_entry_t fd_table[MAX_OPEN_FILES];
 } task_t;
 
 void init_scheduler(void);

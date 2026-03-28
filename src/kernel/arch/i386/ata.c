@@ -184,6 +184,19 @@ ata_drive_t *ata_get_drive(int index)
     return &drives[index];
 }
 
+uint32_t ata_drive_sector_count(ata_drive_t *drive)
+{
+    if (!drive || !drive->present)
+        return 0;
+    return drive->sector_count;
+}
+
+/* Wrapper for callers that only have a void* (e.g., kernel.c) */
+int ata_read_sectors_kern(void *drv, uint32_t lba, uint32_t count, void *buf)
+{
+    return ata_read_sectors((ata_drive_t *)drv, lba, count, buf);
+}
+
 int ata_read_sectors(ata_drive_t *drive, uint32_t lba, uint32_t count,
                      void *buf)
 {
@@ -283,4 +296,44 @@ int ata_flush(ata_drive_t *drive)
     int ret = ata_wait_bsy(drive->io_base);
     restore_flags(flags);
     return ret;
+}
+
+/* ------------------------------------------------------------------ */
+/*  blkdev_t adapter for ATA drives                                   */
+/* ------------------------------------------------------------------ */
+
+/* We need one blkdev + index pair per drive slot */
+typedef struct {
+    blkdev_t dev;
+    int      drive_index;
+} ata_blkdev_t;
+
+static ata_blkdev_t ata_blkdevs[MAX_ATA_DRIVES];
+
+static int ata_blkdev_read(blkdev_t *bdev, uint32_t lba,
+                           uint32_t count, void *buf)
+{
+    ata_blkdev_t *ab = (ata_blkdev_t *)bdev;
+    return ata_read_sectors(&drives[ab->drive_index], lba, count, buf);
+}
+
+static int ata_blkdev_write(blkdev_t *bdev, uint32_t lba,
+                            uint32_t count, const void *buf)
+{
+    ata_blkdev_t *ab = (ata_blkdev_t *)bdev;
+    return ata_write_sectors(&drives[ab->drive_index], lba, count, buf);
+}
+
+blkdev_t *ata_get_blkdev(int index)
+{
+    if (index < 0 || index >= MAX_ATA_DRIVES)
+        return 0;
+    if (!drives[index].present)
+        return 0;
+    ata_blkdev_t *ab = &ata_blkdevs[index];
+    ab->drive_index          = index;
+    ab->dev.read_sectors     = ata_blkdev_read;
+    ab->dev.write_sectors    = ata_blkdev_write;
+    ab->dev.sector_count     = drives[index].sector_count;
+    return &ab->dev;
 }

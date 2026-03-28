@@ -2,6 +2,7 @@
 #define ARCH_I386_ATA_H
 
 #include <stdint.h>
+#include <kernel/blkdev.h>
 
 /* ATA PIO I/O port offsets (relative to base) */
 #define ATA_REG_DATA       0x00
@@ -74,5 +75,12 @@ int ata_flush(ata_drive_t *drive);
 
 /* Get the first detected ATA drive (or NULL). */
 ata_drive_t *ata_get_drive(int index);
+
+/* Get the sector count of a drive. */
+uint32_t ata_drive_sector_count(ata_drive_t *drive);
+
+/* Return a blkdev_t wrapper for an ATA drive.
+ * The returned pointer is static (one per drive slot). */
+blkdev_t *ata_get_blkdev(int index);
 
 #endif /* ARCH_I386_ATA_H */

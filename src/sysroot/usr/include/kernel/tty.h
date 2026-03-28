@@ -37,5 +37,7 @@ void change_colour_current(enum vga_colour fg, enum vga_colour bg);
 void enable_cursor(uint8_t cursor_start, uint8_t cursor_end);
 void disable_cursor(void);
 void update_cursor(int x, int y);
+size_t terminal_get_rows(void);
+size_t terminal_get_cols(void);
 
 #endif

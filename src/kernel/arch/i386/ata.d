@@ -6,4 +6,5 @@ arch/i386/ata.o: arch/i386/ata.c \
  /usr/lib/gcc/i686-elf/11.2.0/include/stddef.h \
  /usr/lib/gcc/i686-elf/11.2.0/include/stdbool.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/stdio.h \
- /home/miro/Source/MOSS/src/sysroot/usr/include/sys/io.h arch/i386/ata.h
+ /home/miro/Source/MOSS/src/sysroot/usr/include/sys/io.h arch/i386/ata.h \
+ include/kernel/blkdev.h

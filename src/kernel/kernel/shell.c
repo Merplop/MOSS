@@ -11,6 +11,7 @@
 #include <moss/commands.h>
 
 extern uint32_t cwd_ino;
+extern char cwd_path[256];
 extern int colour_scheme[];
 extern int custom_colour_scheme;
 
@@ -23,6 +24,9 @@ extern void mv_cmd(void);
 extern void rm_cmd(void);
 extern void cat_cmd(void);
 extern void rmdir_cmd(void);
+extern void disks_cmd(void);
+extern void mkfs_cmd(void);
+extern void mount_cmd(void);
 
 /* Defined in commands.c */
 extern void shutdown_cmd(void);
@@ -37,15 +41,18 @@ extern void run_file(void);
 extern void snake_game(void);
 extern void mmap_cmd(void);
 extern void priv_cmd(void);
+extern void exec_cmd(void);
 
 /* Defined in sound.c */
 extern void music_player(void);
 extern void nosound(void);
 
 char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown",
-"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "priv", "mmap"};
+"colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "priv", "mmap", "exec",
+"disks", "mkfs", "mount"};
 void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd,
-colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, priv_cmd, mmap_cmd};
+colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, priv_cmd, mmap_cmd, exec_cmd,
+disks_cmd, mkfs_cmd, mount_cmd};
 
 void language_prompt(void) {
 	printf(language_spacer_top);
@@ -92,12 +99,12 @@ void start_shell(void) {
 		argc = 0;
 		if (custom_colour_scheme == 0) {
 			change_colour_current(3, 0);
-			printf("/");
+			printf("%s", cwd_path);
 			change_colour_current(15, 0);
 			printf(prompt);
 			change_colour_current(7, 0); 
 		} else {
-			printf("/");
+			printf("%s", cwd_path);
 			printf(prompt);
 		}
 		while(1) {

@@ -99,6 +99,10 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
+/* ---------- Software interrupt: syscall (int 0x80 = vector 128) ----- */
+
+ISR_NOERR 128
+
 /* ---------- common handler -------------------------------------------- */
 
 .extern isr_handler

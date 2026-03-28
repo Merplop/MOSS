@@ -1,0 +1,60 @@
+################################################################
+# TCC — Tiny C Compiler — MOSS OS build
+#
+# Cross-compiles TCC into a static i386 ELF that runs on MOSS.
+# Uses ONE_SOURCE mode (compiles everything from tcc.c).
+################################################################
+
+CC      = i686-elf-gcc
+AR      = i686-elf-ar
+LD      = i686-elf-gcc
+
+USERLIBC = ../userlibc
+
+CFLAGS  = -O2 -g -ffreestanding -nostdlib \
+          -I$(USERLIBC)/include \
+          -I. \
+          -DONE_SOURCE=1 \
+          -DTCC_TARGET_I386 \
+          -DCONFIG_TCC_STATIC \
+          -DCONFIG_TCC_BACKTRACE=0 \
+          -DCONFIG_TCC_BCHECK=0 \
+          -DCONFIG_TCC_SEMLOCK=0 \
+          -DCONFIG_NEW_MACHO=0 \
+          -DMOSS_CROSS_BUILD \
+          -DTCC_USING_DOUBLE_FOR_LDOUBLE=1 \
+          -Wno-unused-parameter \
+          -Wno-sign-compare \
+          -Wno-pointer-sign \
+          -Wno-missing-field-initializers \
+          -Wno-implicit-fallthrough \
+          -Wno-unused-function \
+          -Wno-unused-variable \
+          -std=gnu11
+
+LDFLAGS = -ffreestanding -nostdlib -T $(USERLIBC)/user.ld
+
+OUTPUT  = tcc
+
+# Build libtcc1.a for runtime support
+LIBTCC1 = libtcc1.a
+
+all: $(OUTPUT) $(LIBTCC1)
+
+$(OUTPUT): tcc.o $(USERLIBC)/libc.a $(USERLIBC)/crt0.o
+	@echo "[Linking $@]"
+	$(LD) $(LDFLAGS) -o $@ $(USERLIBC)/crt0.o tcc.o $(USERLIBC)/libc.a -lgcc
+
+tcc.o: tcc.c tcc.h config.h libtcc.h libtcc.c tccpp.c tccgen.c tccdbg.c \
+       tccasm.c tccelf.c tccrun.c tcctools.c i386-gen.c i386-link.c i386-asm.c
+	$(CC) $(CFLAGS) -c tcc.c -o tcc.o
+
+$(LIBTCC1): lib/libtcc1.c
+	@echo "[Building libtcc1.a]"
+	$(CC) -O2 -g -ffreestanding -nostdlib -I$(USERLIBC)/include -c lib/libtcc1.c -o libtcc1.o
+	$(AR) rcs $@ libtcc1.o
+
+clean:
+	rm -f $(OUTPUT) tcc.o libtcc1.o $(LIBTCC1)
+
+.PHONY: all clean

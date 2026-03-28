@@ -8,6 +8,7 @@
 /* IDT gate types */
 #define IDT_GATE_INTERRUPT  0x8E  /* P=1, DPL=0, 32-bit interrupt gate */
 #define IDT_GATE_TRAP       0x8F  /* P=1, DPL=0, 32-bit trap gate     */
+#define IDT_GATE_SYSCALL    0xEE  /* P=1, DPL=3, 32-bit interrupt gate */
 
 /* An entry in the Interrupt Descriptor Table. */
 struct idt_entry {
@@ -96,5 +97,7 @@ extern void irq12(void);
 extern void irq13(void);
 extern void irq14(void);
 extern void irq15(void);
+
+extern void isr128(void);   /* syscall vector (int 0x80) */
 
 #endif /* ARCH_I386_IDT_H */

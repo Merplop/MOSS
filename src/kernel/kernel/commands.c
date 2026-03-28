@@ -9,6 +9,7 @@
 #include <kernel/kernel.h>
 #include <kernel/sched.h>
 #include <kernel/ext2.h>
+#include <kernel/elf.h>
 #include <sys/multiboot.h>
 
 extern uint32_t cwd_ino;
@@ -18,6 +19,10 @@ extern int custom_colour_scheme;
 /* Defined in fs.c */
 extern uint32_t fs_find_file(const char *name);
 extern void touch_cmd(void);
+
+void priv_cmd(void) {
+	printf("Privilege level: ring 0 (kernel)\r\n");
+}
 
 void mmap_cmd(void) {
 	printf("MEMORY MAP:\r\n");
@@ -44,33 +49,6 @@ void mmap_cmd(void) {
 		}
 		printf("\r\n");
 	}
-}
-
-void priv_cmd(void) {
-	extern int kernel_privilege;
-	if (argc < 2) {
-		printf(ARG_COUNT_ERROR);
-		return;
-	}
-	if (argc == 3) {
-		if (memcmp(argv[1], "get", sizeof("get")) == 0) {
-			printf("Current privilege level: %d\r\n", kernel_privilege);
-			return;
-		} else if (memcmp(argv[1], "set", sizeof("set")) == 0) {
-			if (memcmp(argv[2], "test", sizeof("test")) == 0) { 
-				kernel_privilege = 1;
-			}
-		} else {
-			printf(ARG_ERROR);
-			return;
-		}
-		int level = atoi(argv[2]);
-		if (level < 0 || level > 3) {
-			printf(ARG_ERROR);
-			return;
-		}
-		kernel_privilege = level;
-	} 
 }
 
 void shutdown_cmd(void) {
@@ -145,8 +123,10 @@ void help_cmd(void) {
 	printf("tex <filename>     Edit a MOSS-formatted data file\r\n");
 	printf("rm <filename>      Remove a file or directory\r\n");
 	printf("mv <filename>      Move a file or directory\r\n");
-	printf("priv <opt> [priv]  Set kernel privilege level\r\n");
 	printf("mmap               Display memory map\r\n");
+	printf("disks              List detected ATA drives\r\n");
+	printf("mkfs <n>           Format drive n with MOSS ext2\r\n");
+	printf("mount <n>          Mount ext2 filesystem from drive n\r\n");
 }
 
 void clear_cmd(void) {
@@ -163,7 +143,7 @@ void fetch_cmd(void) {
 		return;
 	}
 	printf("Kernel version %s\r\n", version);
-	printf("GNU General Public License v3.0\r\nC. Miro Haapalainen, 2024\r\n");
+	printf("GNU General Public License v3.0\r\nC. Miro Haapalainen, 2026\r\n");
 	printf("ext2 filesystem, CWD inode %d\r\n", cwd_ino);
 }
 
@@ -242,8 +222,11 @@ void text_editor(void) {
 			}
 			continue;
 		}
-		putchar(tex_input);
-		tex_buffer[tex_input_length++] = tex_input;
+		/* Only store printable ASCII and tab */
+		if ((tex_input >= 0x20 && tex_input <= 0x7E) || tex_input == '\t') {
+			putchar(tex_input);
+			tex_buffer[tex_input_length++] = tex_input;
+		}
 	}
 }
 
@@ -287,4 +270,25 @@ void snake_game(void) {
 	update_cursor(3, 2);
 	const char snake_cursor[] = {178, '\0'};
 	printf(snake_cursor);
+}
+
+void exec_cmd(void) {
+	if (argc < 2) {
+		printf(ARG_COUNT_ERROR);
+		return;
+	}
+	uint32_t file_ino = fs_find_file(argv[1]);
+	if (file_ino == 0) {
+		printf(FILE_NOT_FOUND_ERROR);
+		return;
+	}
+	/* Pass program name + arguments to the loaded ELF.
+	 * argv[1] = program path, argv[2..] = program arguments.
+	 * The user program sees argv[1] as argv[0], etc. */
+	int user_argc = argc - 1;        /* skip "exec" itself */
+	char **user_argv = &argv[1];     /* argv[1..] -> user argv[0..] */
+	int rc = elf_load_and_exec(file_ino, user_argc, user_argv);
+	if (rc != 0) {
+		printf("exec: failed to execute '%s'\r\n", argv[1]);
+	}
 }

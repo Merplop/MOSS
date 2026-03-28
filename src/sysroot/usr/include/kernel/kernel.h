@@ -4,7 +4,7 @@
 #include<stdint.h>
 #include<stddef.h>
 
-#define NUM_COMMANDS 22
+#define NUM_COMMANDS 26
 
 /* Saved GRUB memory map (from kernel.c) */
 #define MMAP_BUF_SIZE 512
@@ -55,6 +55,10 @@ extern int current_process;
 
 /* ext2 current working directory inode number */
 extern uint32_t cwd_ino;
+extern char cwd_path[256];
+
+/* Resolve a path (absolute or relative) to an ext2 inode number. */
+uint32_t fs_resolve_path(const char *path);
 
 typedef struct process {
         uint32_t pid;

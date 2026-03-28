@@ -2,6 +2,7 @@
 #define _KERNEL_EXT2_H
 
 #include <stdint.h>
+#include <kernel/blkdev.h>
 
 /* ---------- On-disk structures (all fields little-endian on x86) ---------- */
 
@@ -118,11 +119,11 @@ typedef struct {
 
 /* ---------- In-memory filesystem context ---------- */
 
-/* Forward declaration of the ATA drive structure */
-struct ata_drive;
+/* Maximum number of block groups (32 groups × 8 MiB/group = 256 MiB max) */
+#define EXT2_MAX_BLOCK_GROUPS 32
 
 typedef struct {
-    struct ata_drive *drive;         /* underlying block device (cast from ata_drive_t*) */
+    blkdev_t        *drive;          /* underlying block device */
     uint32_t         part_lba;      /* LBA of the partition start on disk */
     uint32_t         block_size;
     uint32_t         inodes_per_group;
@@ -131,19 +132,21 @@ typedef struct {
     uint32_t         total_blocks;
     uint32_t         total_inodes;
     uint32_t         bgdt_block;    /* block containing group descriptor table */
+    uint32_t         num_groups;    /* number of block groups */
     ext2_superblock_t sb;
-    ext2_group_desc_t gd;           /* single block-group descriptor */
+    ext2_group_desc_t gd;           /* block-group 0 descriptor (compat) */
+    ext2_group_desc_t gds[EXT2_MAX_BLOCK_GROUPS]; /* all group descriptors */
 } ext2_fs_t;
 
 /* ---------- Public API ---------- */
 
-/* Initialise the ext2 filesystem on the given ATA drive + partition start.
+/* Initialise the ext2 filesystem on the given block device + partition start.
  * Returns 0 on success, -1 if no valid ext2 superblock found.
  * If `format_if_missing` is non-zero, creates a fresh filesystem. */
-int ext2_init(void *ata_drive, uint32_t part_lba, int format_if_missing);
+int ext2_init(blkdev_t *dev, uint32_t part_lba, int format_if_missing);
 
 /* Format the region as ext2 (mkfs). */
-int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors);
+int ext2_format(blkdev_t *dev, uint32_t part_lba, uint32_t total_sectors);
 
 /* Look up a file/dir by name within directory `dir_ino`.
  * Returns the inode number, or 0 on failure. */
@@ -173,6 +176,16 @@ uint32_t ext2_create(uint32_t dir_ino, const char *name, uint16_t mode);
 
 /* Remove a directory entry and free the inode (if link count drops to 0). */
 int ext2_remove(uint32_t dir_ino, const char *name);
+
+/* Add a directory entry pointing to an existing inode (for mv/link). */
+int ext2_link(uint32_t dir_ino, uint32_t child_ino,
+              const char *name, uint8_t file_type);
+
+/* Remove a directory entry WITHOUT freeing the inode (for mv). */
+int ext2_unlink(uint32_t dir_ino, const char *name);
+
+/* Update a directory's '..' entry to point to a new parent (for mv). */
+int ext2_update_dotdot(uint32_t dir_ino, uint32_t new_parent_ino);
 
 /* List directory contents. Calls `callback(name, name_len, inode, file_type)`
  * for each entry. */

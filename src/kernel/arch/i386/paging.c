@@ -166,6 +166,11 @@ uint32_t paging_get_physical(uint32_t virt)
     return (entry & 0xFFFFF000) | (virt & 0xFFF);
 }
 
+uint32_t *paging_get_page_dir(void)
+{
+    return kernel_page_dir;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Initialization                                                    */
 /* ------------------------------------------------------------------ */

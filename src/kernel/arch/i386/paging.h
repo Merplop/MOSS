@@ -42,4 +42,7 @@ uint32_t paging_get_physical(uint32_t virtual_addr);
 /* Invalidate the TLB entry for a single page. */
 void paging_flush_tlb_entry(uint32_t virtual_addr);
 
+/* Return a pointer to the kernel page directory (for modifying PDE flags). */
+uint32_t *paging_get_page_dir(void);
+
 #endif /* ARCH_I386_PAGING_H */

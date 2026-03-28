@@ -59,8 +59,11 @@ void initialize_memory_region(uint32_t base_address, uint32_t size) {
     int32_t num_blocks = size / BLOCK_SIZE;
 
     for (; num_blocks > 0; num_blocks--) {
-        unset_block(align++);
-        used_blocks--;
+        if (check_block(align)) {
+            unset_block(align);
+            used_blocks--;
+        }
+        align++;
     }
 
     set_block(0);
@@ -71,8 +74,11 @@ void deinitialize_memory_region(uint32_t base_address, uint32_t size) {
     int32_t num_blocks = size / BLOCK_SIZE;
 
     for (; num_blocks > 0; num_blocks--) {
-        set_block(align++);
-        used_blocks--;
+        if (!check_block(align)) {
+            set_block(align);
+            used_blocks++;
+        }
+        align++;
     }
 }
 

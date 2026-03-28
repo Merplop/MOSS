@@ -129,6 +129,9 @@ void idt_init(void) {
     idt_set_gate(46, (uint32_t)irq14, 0x08, IDT_GATE_INTERRUPT);
     idt_set_gate(47, (uint32_t)irq15, 0x08, IDT_GATE_INTERRUPT);
 
+    /* System call gate: int 0x80 — DPL=3 so user-mode code can invoke it */
+    idt_set_gate(0x80, (uint32_t)isr128, 0x08, IDT_GATE_SYSCALL);
+
     /* Load the IDT */
     asm volatile ("lidt %0" : : "m"(idtp));
 }

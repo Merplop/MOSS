@@ -1,8 +1,8 @@
 /*
  * ext2 filesystem implementation.
  *
- * Supports a single block group with 1024-byte blocks, direct + singly
- * indirect block pointers, regular files and directories.
+ * Supports multiple block groups with 1024-byte blocks, direct + singly
+ * + doubly indirect block pointers, regular files and directories.
  *
  * MOSS Kernel
  */
@@ -11,9 +11,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <kernel/ext2.h>
-
-/* Pull in the concrete ATA type so we can call read/write */
-#include "../arch/i386/ata.h"
+#include <kernel/blkdev.h>
 
 /* ------------------------------------------------------------------ */
 /*  Global filesystem state (single-mount only)                       */
@@ -34,17 +32,17 @@ ext2_fs_t *ext2_get_fs(void)
 /* Read one filesystem block into `buf`. */
 static int read_block(uint32_t block, void *buf)
 {
-    uint32_t sectors_per_block = fs.block_size / ATA_SECTOR_SIZE;
+    uint32_t sectors_per_block = fs.block_size / 512;
     uint32_t lba = fs.part_lba + block * sectors_per_block;
-    return ata_read_sectors((ata_drive_t *)fs.drive, lba, sectors_per_block, buf);
+    return fs.drive->read_sectors(fs.drive, lba, sectors_per_block, buf);
 }
 
 /* Write one filesystem block from `buf`. */
 static int write_block(uint32_t block, const void *buf)
 {
-    uint32_t sectors_per_block = fs.block_size / ATA_SECTOR_SIZE;
+    uint32_t sectors_per_block = fs.block_size / 512;
     uint32_t lba = fs.part_lba + block * sectors_per_block;
-    return ata_write_sectors((ata_drive_t *)fs.drive, lba, sectors_per_block, buf);
+    return fs.drive->write_sectors(fs.drive, lba, sectors_per_block, buf);
 }
 
 /* Temporary block buffer (1024 bytes – fits our block size) */
@@ -58,7 +56,7 @@ static int read_superblock(void)
 {
     /* Superblock is at byte offset 1024 = sector 2 (for 512-byte sectors) */
     static uint8_t buf[1024];
-    if (ata_read_sectors((ata_drive_t *)fs.drive, fs.part_lba + 2, 2, buf) != 0)
+    if (fs.drive->read_sectors(fs.drive, fs.part_lba + 2, 2, buf) != 0)
         return -1;
     memcpy(&fs.sb, buf, sizeof(ext2_superblock_t));
     return 0;
@@ -69,23 +67,21 @@ static int write_superblock(void)
     static uint8_t buf[1024];
     memset(buf, 0, sizeof(buf));
     memcpy(buf, &fs.sb, sizeof(ext2_superblock_t));
-    return ata_write_sectors((ata_drive_t *)fs.drive, fs.part_lba + 2, 2, buf);
+    return fs.drive->write_sectors(fs.drive, fs.part_lba + 2, 2, buf);
 }
 
 static int read_group_desc(void)
 {
-    printf("DEBUG read_gd: bgdt_block=%d blk_size=%d\r\n",
-           fs.bgdt_block, fs.block_size);
-    if (read_block(fs.bgdt_block, tmp_blk) != 0) {
-        printf("DEBUG read_gd: read_block FAILED\r\n");
+    if (read_block(fs.bgdt_block, tmp_blk) != 0)
         return -1;
+
+    /* Copy all group descriptors (they're packed at the start of the block) */
+    for (uint32_t i = 0; i < fs.num_groups && i < EXT2_MAX_BLOCK_GROUPS; i++) {
+        memcpy(&fs.gds[i], tmp_blk + i * sizeof(ext2_group_desc_t),
+               sizeof(ext2_group_desc_t));
     }
-    /* Dump first 32 bytes of the block to see raw content */
-    printf("DEBUG read_gd raw:");
-    for (int __i = 0; __i < 32; __i++)
-        printf(" %d", (int)tmp_blk[__i]);
-    printf("\r\n");
-    memcpy(&fs.gd, tmp_blk, sizeof(ext2_group_desc_t));
+    /* Keep gd as alias for group 0 for backward compatibility */
+    memcpy(&fs.gd, &fs.gds[0], sizeof(ext2_group_desc_t));
     return 0;
 }
 
@@ -93,7 +89,12 @@ static int write_group_desc(void)
 {
     if (read_block(fs.bgdt_block, tmp_blk) != 0)
         return -1;
-    memcpy(tmp_blk, &fs.gd, sizeof(ext2_group_desc_t));
+    for (uint32_t i = 0; i < fs.num_groups && i < EXT2_MAX_BLOCK_GROUPS; i++) {
+        memcpy(tmp_blk + i * sizeof(ext2_group_desc_t), &fs.gds[i],
+               sizeof(ext2_group_desc_t));
+    }
+    /* Keep gd in sync with gds[0] */
+    memcpy(&fs.gd, &fs.gds[0], sizeof(ext2_group_desc_t));
     return write_block(fs.bgdt_block, tmp_blk);
 }
 
@@ -149,37 +150,53 @@ static int bitmap_free(uint32_t bitmap_block, uint32_t idx)
 
 static uint32_t alloc_block(void)
 {
-    if (fs.sb.s_free_blocks_count == 0 || fs.gd.bg_free_blocks_count == 0)
+    if (fs.sb.s_free_blocks_count == 0)
         return 0;
 
-    /* bitmap_alloc returns a 1-based value; ext2 block bitmap is 0-based
-     * relative to the group, so block number = returned_val - 1 + first_data_block
-     * But for a single group with first_data_block=1 and block_size=1024,
-     * the bitmap bit N represents block N.  For simplicity: */
-    uint32_t bit = bitmap_alloc(fs.gd.bg_block_bitmap, fs.sb.s_blocks_count);
-    if (bit == 0)
-        return 0;
-    uint32_t block_no = bit - 1;  /* convert from 1-based bitmap_alloc return */
+    for (uint32_t g = 0; g < fs.num_groups; g++) {
+        if (fs.gds[g].bg_free_blocks_count == 0)
+            continue;
 
-    fs.sb.s_free_blocks_count--;
-    fs.gd.bg_free_blocks_count--;
-    write_superblock();
-    write_group_desc();
+        uint32_t bits_in_group = fs.blocks_per_group;
+        /* Last group may have fewer blocks */
+        if (g == fs.num_groups - 1) {
+            uint32_t remaining = fs.total_blocks - g * fs.blocks_per_group;
+            if (remaining < bits_in_group)
+                bits_in_group = remaining;
+        }
 
-    /* Zero the newly allocated block */
-    memset(tmp_blk, 0, fs.block_size);
-    write_block(block_no, tmp_blk);
+        uint32_t bit = bitmap_alloc(fs.gds[g].bg_block_bitmap, bits_in_group);
+        if (bit == 0)
+            continue;
 
-    return block_no;
+        /* Convert to absolute block number */
+        uint32_t block_no = g * fs.blocks_per_group + (bit - 1);
+
+        fs.sb.s_free_blocks_count--;
+        fs.gds[g].bg_free_blocks_count--;
+        write_superblock();
+        write_group_desc();
+
+        /* Zero the newly allocated block */
+        memset(tmp_blk, 0, fs.block_size);
+        write_block(block_no, tmp_blk);
+
+        return block_no;
+    }
+    return 0;
 }
 
 static void free_block(uint32_t block_no)
 {
     if (block_no == 0)
         return;
-    bitmap_free(fs.gd.bg_block_bitmap, block_no);
+    uint32_t g = block_no / fs.blocks_per_group;
+    uint32_t local = block_no % fs.blocks_per_group;
+    if (g >= fs.num_groups)
+        return;
+    bitmap_free(fs.gds[g].bg_block_bitmap, local);
     fs.sb.s_free_blocks_count++;
-    fs.gd.bg_free_blocks_count++;
+    fs.gds[g].bg_free_blocks_count++;
     write_superblock();
     write_group_desc();
 }
@@ -190,34 +207,47 @@ static void free_block(uint32_t block_no)
 
 static uint32_t alloc_inode(void)
 {
-    if (fs.sb.s_free_inodes_count == 0 || fs.gd.bg_free_inodes_count == 0) {
+    if (fs.sb.s_free_inodes_count == 0) {
         printf("alloc_inode: no free inodes available\n");
-        return 0; 
-    }
-
-    uint32_t bit = bitmap_alloc(fs.gd.bg_inode_bitmap, fs.sb.s_inodes_count);
-    if (bit == 0) {
-        printf("alloc_inode: bitmap_alloc failed to allocate inode\n");
         return 0;
     }
-    /* bit is 1-based from bitmap_alloc, and ext2 inodes are 1-based.
-     * bitmap bit 0 = inode 1, so inode number = bit. */
-    uint32_t ino = bit;
 
-    fs.sb.s_free_inodes_count--;
-    fs.gd.bg_free_inodes_count--;
-    write_superblock();
-    write_group_desc();
-    return ino;
+    for (uint32_t g = 0; g < fs.num_groups; g++) {
+        if (fs.gds[g].bg_free_inodes_count == 0)
+            continue;
+
+        uint32_t bit = bitmap_alloc(fs.gds[g].bg_inode_bitmap,
+                                    fs.inodes_per_group);
+        if (bit == 0)
+            continue;
+
+        /* Convert to absolute inode number:
+         * bit is 1-based from bitmap_alloc.
+         * Inode number = group_offset + bit */
+        uint32_t ino = g * fs.inodes_per_group + bit;
+
+        fs.sb.s_free_inodes_count--;
+        fs.gds[g].bg_free_inodes_count--;
+        write_superblock();
+        write_group_desc();
+        return ino;
+    }
+
+    printf("alloc_inode: bitmap_alloc failed across all groups\n");
+    return 0;
 }
 
 static void free_inode(uint32_t ino)
 {
     if (ino == 0)
         return;
-    bitmap_free(fs.gd.bg_inode_bitmap, ino - 1);
+    uint32_t g = (ino - 1) / fs.inodes_per_group;
+    uint32_t local = (ino - 1) % fs.inodes_per_group;
+    if (g >= fs.num_groups)
+        return;
+    bitmap_free(fs.gds[g].bg_inode_bitmap, local);
     fs.sb.s_free_inodes_count++;
-    fs.gd.bg_free_inodes_count++;
+    fs.gds[g].bg_free_inodes_count++;
     write_superblock();
     write_group_desc();
 }
@@ -232,13 +262,16 @@ int ext2_read_inode(uint32_t ino, ext2_inode_t *out)
         return -1;
 
     uint32_t index = ino - 1;  /* inodes are 1-based */
-    uint32_t inodes_per_block = fs.block_size / fs.inode_size;
-    uint32_t block_offset = index / inodes_per_block;
-    uint32_t local_index  = index % inodes_per_block;
-    uint32_t block_no = fs.gd.bg_inode_table + block_offset;
+    uint32_t g = index / fs.inodes_per_group;
+    uint32_t local_index_in_group = index % fs.inodes_per_group;
 
-//    printf("DEBUG read_inode: ino=%d tbl=%d blk=%d local=%d isz=%d\r\n",
-//           ino, fs.gd.bg_inode_table, block_no, local_index, fs.inode_size);
+    if (g >= fs.num_groups)
+        return -1;
+
+    uint32_t inodes_per_block = fs.block_size / fs.inode_size;
+    uint32_t block_offset = local_index_in_group / inodes_per_block;
+    uint32_t local_index  = local_index_in_group % inodes_per_block;
+    uint32_t block_no = fs.gds[g].bg_inode_table + block_offset;
 
     if (read_block(block_no, tmp_blk) != 0)
         return -1;
@@ -253,10 +286,16 @@ int ext2_write_inode(uint32_t ino, const ext2_inode_t *in)
         return -1;
 
     uint32_t index = ino - 1;
+    uint32_t g = index / fs.inodes_per_group;
+    uint32_t local_index_in_group = index % fs.inodes_per_group;
+
+    if (g >= fs.num_groups)
+        return -1;
+
     uint32_t inodes_per_block = fs.block_size / fs.inode_size;
-    uint32_t block_offset = index / inodes_per_block;
-    uint32_t local_index  = index % inodes_per_block;
-    uint32_t block_no = fs.gd.bg_inode_table + block_offset;
+    uint32_t block_offset = local_index_in_group / inodes_per_block;
+    uint32_t local_index  = local_index_in_group % inodes_per_block;
+    uint32_t block_no = fs.gds[g].bg_inode_table + block_offset;
 
     if (read_block(block_no, tmp_blk) != 0)
         return -1;
@@ -291,8 +330,27 @@ static uint32_t inode_get_block(const ext2_inode_t *inode, uint32_t logical)
         return ptrs[logical];
     }
 
-    /* Doubly/triply indirect not implemented for this basic version */
-    return 0;
+    /* Doubly indirect */
+    logical -= ptrs_per_block;
+    if (logical < ptrs_per_block * ptrs_per_block) {
+        if (inode->i_block[EXT2_DIND_BLOCK] == 0)
+            return 0;
+        uint8_t dind_buf[4096] __attribute__((aligned(4)));
+        if (read_block(inode->i_block[EXT2_DIND_BLOCK], dind_buf) != 0)
+            return 0;
+        uint32_t *dptrs = (uint32_t *)dind_buf;
+        uint32_t ind_index = logical / ptrs_per_block;
+        uint32_t ind_off   = logical % ptrs_per_block;
+        if (dptrs[ind_index] == 0)
+            return 0;
+        uint8_t ind_buf[4096] __attribute__((aligned(4)));
+        if (read_block(dptrs[ind_index], ind_buf) != 0)
+            return 0;
+        uint32_t *ptrs = (uint32_t *)ind_buf;
+        return ptrs[ind_off];
+    }
+
+    return 0;  /* triply indirect not supported */
 }
 
 /* Assign disk block `disk_block` to logical block `logical` of inode.
@@ -322,6 +380,37 @@ static int inode_set_block(ext2_inode_t *inode, uint32_t logical,
         uint32_t *ptrs = (uint32_t *)ind_buf;
         ptrs[logical] = disk_block;
         return write_block(inode->i_block[EXT2_IND_BLOCK], ind_buf);
+    }
+
+    /* Doubly indirect */
+    logical -= ptrs_per_block;
+    if (logical < ptrs_per_block * ptrs_per_block) {
+        if (inode->i_block[EXT2_DIND_BLOCK] == 0) {
+            uint32_t dind = alloc_block();
+            if (dind == 0)
+                return -1;
+            inode->i_block[EXT2_DIND_BLOCK] = dind;
+        }
+        uint8_t dind_buf[4096] __attribute__((aligned(4)));
+        if (read_block(inode->i_block[EXT2_DIND_BLOCK], dind_buf) != 0)
+            return -1;
+        uint32_t *dptrs = (uint32_t *)dind_buf;
+        uint32_t ind_index = logical / ptrs_per_block;
+        uint32_t ind_off   = logical % ptrs_per_block;
+        if (dptrs[ind_index] == 0) {
+            uint32_t ind = alloc_block();
+            if (ind == 0)
+                return -1;
+            dptrs[ind_index] = ind;
+            if (write_block(inode->i_block[EXT2_DIND_BLOCK], dind_buf) != 0)
+                return -1;
+        }
+        uint8_t ind_buf[4096] __attribute__((aligned(4)));
+        if (read_block(dptrs[ind_index], ind_buf) != 0)
+            return -1;
+        uint32_t *ptrs = (uint32_t *)ind_buf;
+        ptrs[ind_off] = disk_block;
+        return write_block(dptrs[ind_index], ind_buf);
     }
 
     return -1;  /* too large */
@@ -443,6 +532,29 @@ int ext2_truncate(uint32_t ino)
         }
         free_block(inode.i_block[EXT2_IND_BLOCK]);
         inode.i_block[EXT2_IND_BLOCK] = 0;
+    }
+
+    /* Free doubly indirect blocks */
+    if (inode.i_block[EXT2_DIND_BLOCK]) {
+        uint8_t dind_buf[4096] __attribute__((aligned(4)));
+        if (read_block(inode.i_block[EXT2_DIND_BLOCK], dind_buf) == 0) {
+            uint32_t *dptrs = (uint32_t *)dind_buf;
+            for (uint32_t i = 0; i < ptrs_per_block; i++) {
+                if (dptrs[i]) {
+                    uint8_t ind_buf2[4096] __attribute__((aligned(4)));
+                    if (read_block(dptrs[i], ind_buf2) == 0) {
+                        uint32_t *ptrs = (uint32_t *)ind_buf2;
+                        for (uint32_t j = 0; j < ptrs_per_block; j++) {
+                            if (ptrs[j])
+                                free_block(ptrs[j]);
+                        }
+                    }
+                    free_block(dptrs[i]);
+                }
+            }
+        }
+        free_block(inode.i_block[EXT2_DIND_BLOCK]);
+        inode.i_block[EXT2_DIND_BLOCK] = 0;
     }
 
     inode.i_size = 0;
@@ -708,7 +820,7 @@ uint32_t ext2_create(uint32_t dir_ino, const char *name, uint16_t mode)
             ext2_write_inode(dir_ino, &parent);
         }
 
-        fs.gd.bg_used_dirs_count++;
+        fs.gds[(ino - 1) / fs.inodes_per_group].bg_used_dirs_count++;
         write_group_desc();
     }
 
@@ -722,6 +834,99 @@ uint32_t ext2_create(uint32_t dir_ino, const char *name, uint16_t mode)
     }
 
     return ino;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Link / unlink (for mv support)                                    */
+/* ------------------------------------------------------------------ */
+
+/* Add a directory entry pointing to an existing inode (no inode alloc). */
+int ext2_link(uint32_t dir_ino, uint32_t child_ino,
+              const char *name, uint8_t file_type)
+{
+    return dir_add_entry(dir_ino, child_ino, name, file_type);
+}
+
+/* Remove a directory entry WITHOUT freeing the inode or its data.
+ * Used by mv to detach a name from its old directory. */
+int ext2_unlink(uint32_t dir_ino, const char *name)
+{
+    ext2_inode_t dir;
+    if (ext2_read_inode(dir_ino, &dir) != 0)
+        return -1;
+    if (!(dir.i_mode & EXT2_S_IFDIR))
+        return -1;
+
+    uint8_t name_len = (uint8_t)strlen(name);
+    uint32_t offset = 0;
+
+    while (offset < dir.i_size) {
+        uint32_t logical_block = offset / fs.block_size;
+        uint32_t disk_block = inode_get_block(&dir, logical_block);
+        if (disk_block == 0)
+            break;
+
+        uint8_t blk_buf[4096] __attribute__((aligned(4)));
+        if (read_block(disk_block, blk_buf) != 0)
+            break;
+
+        uint32_t prev_off = 0;
+        uint32_t blk_off = 0;
+        int has_prev = 0;
+
+        while (blk_off < fs.block_size) {
+            ext2_dir_entry_t *de = (ext2_dir_entry_t *)(blk_buf + blk_off);
+            if (de->rec_len == 0)
+                break;
+            if (de->inode != 0 && de->name_len == name_len &&
+                memcmp(de->name, name, name_len) == 0) {
+                /* Found — remove entry by merging with previous */
+                if (has_prev) {
+                    ext2_dir_entry_t *prev =
+                        (ext2_dir_entry_t *)(blk_buf + prev_off);
+                    prev->rec_len += de->rec_len;
+                } else {
+                    de->inode = 0;
+                }
+                return write_block(disk_block, blk_buf);
+            }
+            if (de->inode != 0) {
+                prev_off = blk_off;
+                has_prev = 1;
+            }
+            blk_off += de->rec_len;
+        }
+        offset += fs.block_size;
+    }
+    return -1;  /* not found */
+}
+
+/* Update a directory's '..' entry to point to a new parent inode. */
+int ext2_update_dotdot(uint32_t dir_ino, uint32_t new_parent_ino)
+{
+    ext2_inode_t dir;
+    if (ext2_read_inode(dir_ino, &dir) != 0)
+        return -1;
+    if (dir.i_block[0] == 0)
+        return -1;
+
+    uint8_t blk_buf[4096] __attribute__((aligned(4)));
+    if (read_block(dir.i_block[0], blk_buf) != 0)
+        return -1;
+
+    /* Walk entries looking for '..' */
+    uint32_t off = 0;
+    while (off < fs.block_size) {
+        ext2_dir_entry_t *de = (ext2_dir_entry_t *)(blk_buf + off);
+        if (de->rec_len == 0)
+            break;
+        if (de->name_len == 2 && de->name[0] == '.' && de->name[1] == '.') {
+            de->inode = new_parent_ino;
+            return write_block(dir.i_block[0], blk_buf);
+        }
+        off += de->rec_len;
+    }
+    return -1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -788,7 +993,7 @@ int ext2_remove(uint32_t dir_ino, const char *name)
                         }
                     }
 
-                    fs.gd.bg_used_dirs_count--;
+                    fs.gds[(target_ino - 1) / fs.inodes_per_group].bg_used_dirs_count--;
                     write_group_desc();
 
                     /* Decrement parent link count (for ..) */
@@ -828,68 +1033,112 @@ int ext2_remove(uint32_t dir_ino, const char *name)
 /*  Format (mkfs.ext2)                                                */
 /* ------------------------------------------------------------------ */
 
-int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
+int ext2_format(blkdev_t *dev, uint32_t part_lba, uint32_t total_sectors)
 {
     /* We use 1024-byte blocks.  2 sectors per block. */
     uint32_t block_size = 1024;
-    uint32_t total_blocks = (total_sectors * ATA_SECTOR_SIZE) / block_size;
+    uint32_t total_blocks = (total_sectors * 512) / block_size;
 
-    printf("ext2_format: total_sectors=%d, total_blocks=%d\n", total_sectors, total_blocks);
+    printf("ext2_format: total_sectors=%u, total_blocks=%u\n",
+           total_sectors, total_blocks);
 
     if (total_blocks < 64)
         return -1;  /* too small */
 
-    /* Cap to what a single block group can handle.
-     * One bitmap block = block_size * 8 bits = 8192 blocks max (8 MiB). */
-    uint32_t max_blocks_per_group = block_size * 8;
-    if (total_blocks > max_blocks_per_group)
-        total_blocks = max_blocks_per_group;
+    /* ---------- Compute multi-block-group layout ---------- */
 
-    /* Layout for single block group:
-     * Block 0: boot block (unused)
-     * Block 1: superblock
-     * Block 2: block group descriptor table
-     * Block 3: block bitmap
-     * Block 4: inode bitmap
-     * Blocks 5..(5+inode_table_blocks-1): inode table
-     * Rest: data blocks
-     *
-     * Inodes: cap to what one inode bitmap block can track (block_size * 8). */
-    uint32_t inodes_count = total_blocks / 4;
-    if (inodes_count < 16)
-        inodes_count = 16;
-    if (inodes_count > max_blocks_per_group)
-        inodes_count = max_blocks_per_group;
+    uint32_t blocks_per_group = block_size * 8;  /* 8192 blocks per bitmap */
+    uint32_t num_groups = (total_blocks + blocks_per_group - 1) / blocks_per_group;
+    if (num_groups > EXT2_MAX_BLOCK_GROUPS)
+        num_groups = EXT2_MAX_BLOCK_GROUPS;
+    if (num_groups == 0)
+        num_groups = 1;
 
+    /* Cap total_blocks to what our groups can cover */
+    if (total_blocks > num_groups * blocks_per_group)
+        total_blocks = num_groups * blocks_per_group;
+
+    /* Inode parameters */
     uint32_t inode_size = 128;
-    uint32_t inodes_per_block = block_size / inode_size;
-    uint32_t inode_table_blocks = (inodes_count + inodes_per_block - 1) / inodes_per_block;
+    uint32_t inodes_per_block = block_size / inode_size;           /* 8  */
+    uint32_t inodes_per_group = blocks_per_group / 4;              /* 2048 */
+    uint32_t inode_table_blocks =
+        (inodes_per_group + inodes_per_block - 1) / inodes_per_block; /* 256 */
 
-    uint32_t first_data_block = 5 + inode_table_blocks;
+    /*
+     * Metadata overhead per group (local block indices):
+     *   Group 0: boot(0) + SB(1) + BGDT(2) + bbitmap(3) + ibitmap(4)
+     *            + inode_table(5 .. 5+itb-1)  =  5 + inode_table_blocks
+     *   Group N: bbitmap(0) + ibitmap(1) + inode_table(2 .. 2+itb-1)
+     *            =  2 + inode_table_blocks
+     */
+    uint32_t meta_g0 = 5 + inode_table_blocks;
+    uint32_t meta_gN = 2 + inode_table_blocks;
 
-    /* If metadata is larger than the volume, shrink inodes */
-    while (first_data_block >= total_blocks && inodes_count > 16) {
-        inodes_count /= 2;
-        inode_table_blocks = (inodes_count + inodes_per_block - 1) / inodes_per_block;
-        first_data_block = 5 + inode_table_blocks;
+    /* Drop last group if it's too small for its own metadata */
+    while (num_groups > 1) {
+        uint32_t last_blocks = total_blocks - (num_groups - 1) * blocks_per_group;
+        uint32_t last_meta = meta_gN;
+        if (last_blocks > last_meta)
+            break;
+        num_groups--;
+        total_blocks = num_groups * blocks_per_group;
     }
-    if (first_data_block >= total_blocks)
+    if (num_groups == 1 && total_blocks <= meta_g0)
         return -1;
 
-    /* Build the superblock */
+    uint32_t total_inodes = inodes_per_group * num_groups;
+
+    /* ---------- Build block group descriptors ---------- */
+
+    ext2_group_desc_t gds[EXT2_MAX_BLOCK_GROUPS];
+    memset(gds, 0, sizeof(gds));
+    uint32_t total_free_blocks = 0;
+
+    for (uint32_t g = 0; g < num_groups; g++) {
+        uint32_t base = g * blocks_per_group;
+        uint32_t blocks_in_group = blocks_per_group;
+        if (g == num_groups - 1) {
+            uint32_t rem = total_blocks - base;
+            if (rem < blocks_in_group)
+                blocks_in_group = rem;
+        }
+
+        uint32_t meta;
+        if (g == 0) {
+            gds[g].bg_block_bitmap = base + 3;
+            gds[g].bg_inode_bitmap = base + 4;
+            gds[g].bg_inode_table  = base + 5;
+            meta = meta_g0;
+        } else {
+            gds[g].bg_block_bitmap = base;
+            gds[g].bg_inode_bitmap = base + 1;
+            gds[g].bg_inode_table  = base + 2;
+            meta = meta_gN;
+        }
+
+        uint32_t free_in_group = blocks_in_group - meta;
+        gds[g].bg_free_blocks_count = (uint16_t)free_in_group;
+        gds[g].bg_free_inodes_count = (uint16_t)inodes_per_group;
+        gds[g].bg_used_dirs_count   = 0;
+        total_free_blocks += free_in_group;
+    }
+
+    /* ---------- Build superblock ---------- */
+
     ext2_superblock_t sb;
     memset(&sb, 0, sizeof(sb));
-    sb.s_inodes_count      = inodes_count;
+    sb.s_inodes_count      = total_inodes;
     sb.s_blocks_count      = total_blocks;
     sb.s_r_blocks_count    = 0;
-    sb.s_free_blocks_count = total_blocks - first_data_block;
-    sb.s_free_inodes_count = inodes_count - 1;  /* inode 1 is reserved */
+    sb.s_free_blocks_count = total_free_blocks;
+    sb.s_free_inodes_count = total_inodes - 1;  /* inode 1 is reserved */
     sb.s_first_data_block  = 1;  /* for 1024-byte blocks, superblock is in block 1 */
     sb.s_log_block_size    = 0;  /* 1024 << 0 = 1024 */
     sb.s_log_frag_size     = 0;
-    sb.s_blocks_per_group  = total_blocks;
-    sb.s_frags_per_group   = total_blocks;
-    sb.s_inodes_per_group  = inodes_count;
+    sb.s_blocks_per_group  = blocks_per_group;
+    sb.s_frags_per_group   = blocks_per_group;
+    sb.s_inodes_per_group  = inodes_per_group;
     sb.s_magic             = EXT2_MAGIC;
     sb.s_state             = 1;  /* clean */
     sb.s_errors            = 1;  /* continue on errors */
@@ -899,81 +1148,97 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
     sb.s_max_mnt_count     = 20;
     memcpy(sb.s_volume_name, "MOSS", 4);
 
-    /* Write superblock at byte offset 1024 (sector 2) */
+    /* ---------- Set up fs context (needed for write_block) ---------- */
+
+    fs.drive            = dev;
+    fs.part_lba         = part_lba;
+    fs.block_size       = block_size;
+    fs.inodes_per_group = inodes_per_group;
+    fs.inode_size       = inode_size;
+    fs.blocks_per_group = blocks_per_group;
+    fs.total_blocks     = total_blocks;
+    fs.total_inodes     = total_inodes;
+    fs.bgdt_block       = 2;
+    fs.num_groups       = num_groups;
+    memcpy(&fs.sb, &sb, sizeof(sb));
+    memcpy(&fs.gd, &gds[0], sizeof(ext2_group_desc_t));
+    memcpy(fs.gds, gds, num_groups * sizeof(ext2_group_desc_t));
+
+    /* ---------- Write superblock at byte offset 1024 (sector 2) ---------- */
+
     static uint8_t sb_buf[1024];
     memset(sb_buf, 0, sizeof(sb_buf));
     memcpy(sb_buf, &sb, sizeof(sb));
-    if (ata_write_sectors((ata_drive_t *)ata_drive, part_lba + 2, 2, sb_buf) != 0)
+    if (dev->write_sectors(dev, part_lba + 2, 2, sb_buf) != 0)
         return -1;
 
-    /* Build block group descriptor */
-    ext2_group_desc_t gd;
-    memset(&gd, 0, sizeof(gd));
-    gd.bg_block_bitmap      = 3;
-    gd.bg_inode_bitmap       = 4;
-    gd.bg_inode_table       = 5;
-    gd.bg_free_blocks_count = (uint16_t)sb.s_free_blocks_count;
-    gd.bg_free_inodes_count = (uint16_t)sb.s_free_inodes_count;
-    gd.bg_used_dirs_count   = 0;
+    /* ---------- Write BGDT at block 2 ---------- */
 
-    /* Write BGDT at block 2 */
     static uint8_t bgdt_buf[1024];
     memset(bgdt_buf, 0, sizeof(bgdt_buf));
-    memcpy(bgdt_buf, &gd, sizeof(gd));
-    uint32_t bgdt_lba = part_lba + 2 * 2;  /* block 2 = sector 4 */
-    if (ata_write_sectors((ata_drive_t *)ata_drive, bgdt_lba, 2, bgdt_buf) != 0)
+    for (uint32_t i = 0; i < num_groups; i++)
+        memcpy(bgdt_buf + i * sizeof(ext2_group_desc_t),
+               &gds[i], sizeof(ext2_group_desc_t));
+    if (write_block(fs.bgdt_block, bgdt_buf) != 0)
         return -1;
 
-    /* Initialize block bitmap – mark metadata blocks as used */
-    static uint8_t bbitmap[1024];
-    memset(bbitmap, 0, sizeof(bbitmap));
-    for (uint32_t i = 0; i < first_data_block; i++) {
-        bbitmap[i / 8] |= (1 << (i % 8));
-    }
-    /* Also mark blocks beyond total_blocks */
-    for (uint32_t i = total_blocks; i < total_blocks + 8; i++) {
-        if (i / 8 < sizeof(bbitmap))
+    /* ---------- Initialize each block group ---------- */
+
+    printf("ext2_format: creating %u block group(s) (%u blocks, %u inodes)\n",
+           num_groups, total_blocks, total_inodes);
+
+    for (uint32_t g = 0; g < num_groups; g++) {
+        uint32_t base = g * blocks_per_group;
+        uint32_t blocks_in_group = blocks_per_group;
+        if (g == num_groups - 1) {
+            uint32_t rem = total_blocks - base;
+            if (rem < blocks_in_group)
+                blocks_in_group = rem;
+        }
+
+        uint32_t meta = (g == 0) ? meta_g0 : meta_gN;
+
+        /* --- Block bitmap --- */
+        static uint8_t bbitmap[1024];
+        memset(bbitmap, 0, sizeof(bbitmap));
+        /* Mark metadata blocks as used */
+        for (uint32_t i = 0; i < meta; i++)
             bbitmap[i / 8] |= (1 << (i % 8));
-    }
-    uint32_t bbitmap_lba = part_lba + 3 * 2;
-    if (ata_write_sectors((ata_drive_t *)ata_drive, bbitmap_lba, 2, bbitmap) != 0)
-        return -1;
-
-    /* Initialize inode bitmap – mark inode 1 as used (reserved) */
-    static uint8_t ibitmap[1024];
-    memset(ibitmap, 0, sizeof(ibitmap));
-    ibitmap[0] = 0x01;  /* inode 1 reserved */
-    uint32_t ibitmap_lba = part_lba + 4 * 2;
-    if (ata_write_sectors((ata_drive_t *)ata_drive, ibitmap_lba, 2, ibitmap) != 0)
-        return -1;
-
-    /* Zero the inode table */
-    static uint8_t zero_buf[1024];
-    memset(zero_buf, 0, sizeof(zero_buf));
-    for (uint32_t i = 0; i < inode_table_blocks; i++) {
-        uint32_t lba = part_lba + (5 + i) * 2;
-        if (ata_write_sectors((ata_drive_t *)ata_drive, lba, 2, zero_buf) != 0)
+        /* Mark bits beyond this group's actual block count */
+        for (uint32_t i = blocks_in_group; i < blocks_per_group; i++) {
+            if (i / 8 < block_size)
+                bbitmap[i / 8] |= (1 << (i % 8));
+        }
+        if (write_block(gds[g].bg_block_bitmap, bbitmap) != 0)
             return -1;
+
+        /* --- Inode bitmap --- */
+        static uint8_t ibitmap[1024];
+        memset(ibitmap, 0, sizeof(ibitmap));
+        if (g == 0)
+            ibitmap[0] = 0x01;  /* inode 1 reserved */
+        if (write_block(gds[g].bg_inode_bitmap, ibitmap) != 0)
+            return -1;
+
+        /* --- Zero inode table --- */
+        static uint8_t zero_buf[1024];
+        memset(zero_buf, 0, sizeof(zero_buf));
+        for (uint32_t i = 0; i < inode_table_blocks; i++) {
+            if (write_block(gds[g].bg_inode_table + i, zero_buf) != 0)
+                return -1;
+        }
+
+        if (num_groups > 1)
+            printf("  Group %u/%u initialized\r\n", g + 1, num_groups);
     }
 
-    /* Now set up the context so we can use ext2_create */
-    fs.drive            = (struct ata_drive *)ata_drive;
-    fs.part_lba         = part_lba;
-    fs.block_size       = block_size;
-    fs.inodes_per_group = inodes_count;
-    fs.inode_size       = inode_size;
-    fs.blocks_per_group = total_blocks;
-    fs.total_blocks     = total_blocks;
-    fs.total_inodes     = inodes_count;
-    fs.bgdt_block       = 2;
-    memcpy(&fs.sb, &sb, sizeof(sb));
-    memcpy(&fs.gd, &gd, sizeof(gd));
     fs_ready = 1;
 
-    printf("Free blocks according to superblock in fs: %d\n", fs.sb.s_free_blocks_count);
-    printf("Free inodes according to superblock in fs: %d\n", fs.sb.s_free_inodes_count);
+    printf("Free blocks: %u, Free inodes: %u\n",
+           fs.sb.s_free_blocks_count, fs.sb.s_free_inodes_count);
 
-    /* Create the root directory (inode 2) */
+    /* ---------- Create root directory (inode 2) ---------- */
+
     uint32_t root_ino = alloc_inode();
     if (root_ino != EXT2_ROOT_INO) {
         /* Should be inode 2 (inode 1 is reserved) */
@@ -1017,6 +1282,7 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
     write_block(root_blk, root_dir_data);
 
     fs.gd.bg_used_dirs_count = 1;
+    fs.gds[0].bg_used_dirs_count = 1;
     write_group_desc();
 
     return 0;
@@ -1026,9 +1292,9 @@ int ext2_format(void *ata_drive, uint32_t part_lba, uint32_t total_sectors)
 /*  Mount existing ext2                                               */
 /* ------------------------------------------------------------------ */
 
-int ext2_init(void *ata_drive, uint32_t part_lba, int format_if_missing)
+int ext2_init(blkdev_t *dev, uint32_t part_lba, int format_if_missing)
 {
-    fs.drive    = (struct ata_drive *)ata_drive;
+    fs.drive    = dev;
     fs.part_lba = part_lba;
     fs_ready    = 0;
 
@@ -1037,27 +1303,26 @@ int ext2_init(void *ata_drive, uint32_t part_lba, int format_if_missing)
         printf("[ext2] No superblock found at LBA %u\n", part_lba + 2);
         if (format_if_missing) {
             printf("[ext2] Formatting new ext2 filesystem at LBA %u\n", part_lba);
-            return ext2_format(ata_drive, part_lba, 16384);
+            uint32_t sectors = dev->sector_count;
+            if (sectors <= part_lba)
+                sectors = 131072;  /* fallback */
+            else
+                sectors -= part_lba;
+            return ext2_format(dev, part_lba, sectors);
         }
         return -1;
     }
 
     if (fs.sb.s_magic != EXT2_MAGIC) {
-        printf("[ext2] Invalid magic number\n",
-               EXT2_MAGIC, fs.sb.s_magic);
+        printf("[ext2] Invalid magic number\n");
         if (format_if_missing) {
-            printf("[ext2] Formatting new ext2 filesystem at LBA %d\n", part_lba);
-            /* Determine size from the drive's sector count */
-            ata_drive_t *drv = (ata_drive_t *)ata_drive;
-            uint32_t sectors = drv->sector_count;
+            printf("[ext2] Formatting new ext2 filesystem at LBA %u\n", part_lba);
+            uint32_t sectors = dev->sector_count;
             if (sectors <= part_lba)
-                sectors = 16384;  /* 8 MiB fallback */
+                sectors = 131072;  /* fallback */
             else
                 sectors -= part_lba;
-            /* Cap: format only uses what one block group can handle anyway */
-            if (sectors > 16384)
-                sectors = 16384;  /* 8 MiB = 8192 blocks of 1024 bytes */
-            return ext2_format(ata_drive, part_lba, sectors);
+            return ext2_format(dev, part_lba, sectors);
         }
         return -1;
     }
@@ -1070,17 +1335,20 @@ int ext2_init(void *ata_drive, uint32_t part_lba, int format_if_missing)
     fs.total_inodes     = fs.sb.s_inodes_count;
     fs.bgdt_block       = fs.sb.s_first_data_block + 1;
 
+    /* Calculate number of block groups */
+    fs.num_groups = (fs.total_blocks + fs.blocks_per_group - 1)
+                    / fs.blocks_per_group;
+    if (fs.num_groups > EXT2_MAX_BLOCK_GROUPS)
+        fs.num_groups = EXT2_MAX_BLOCK_GROUPS;
+
     if (read_group_desc() != 0) {
         printf("[ext2] Failed to read block group descriptor\n");
         return -1;
     }
 
-    printf("DEBUG init: bgdt_blk=%d bbitmap=%d ibitmap=%d itable=%d\r\n",
-           fs.bgdt_block, fs.gd.bg_block_bitmap,
-           fs.gd.bg_inode_bitmap, fs.gd.bg_inode_table);
-    printf("DEBUG init: free_blk=%d free_ino=%d dirs=%d\r\n",
-           fs.gd.bg_free_blocks_count, fs.gd.bg_free_inodes_count,
-           fs.gd.bg_used_dirs_count);
+    printf("[ext2] %d blocks, %d groups, %d blks/grp, %d inodes/grp\r\n",
+           fs.total_blocks, fs.num_groups, fs.blocks_per_group,
+           fs.inodes_per_group);
 
     fs_ready = 1;
     return 0;

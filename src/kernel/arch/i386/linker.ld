@@ -38,6 +38,11 @@ SECTIONS
 		*(.bss)
 	}
 
+	/* Symbol marking the end of the kernel image (used to place the
+	   physical memory bitmap right after the kernel in RAM). */
+	. = ALIGN(4K);
+	_kernel_end = .;
+
 	/* The compiler may produce other sections, put them in the proper place in
 	   in this file, if you'd like to include them in the final kernel. */
 }

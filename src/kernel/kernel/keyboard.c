@@ -1,5 +1,28 @@
+/*
+ * PS/2 Keyboard driver — IRQ1-driven with event queue.
+ * MOSS Kernel
+ *
+ * Maintains:
+ *   - A ring buffer of key_event_t for press/release events
+ *   - A 128-byte key-state bitmap (which keys are currently held)
+ *   - Current modifier state (shift, ctrl, alt, capslock)
+ *
+ * The shell's blocking get_key() consumes from the same queue.
+ * User-space programs use SYS_POLL_KEY for non-blocking access.
+ */
+
 #include <stdint.h>
 #include <kernel/keyboard.h>
+
+/* Forward declarations for arch-specific functions */
+struct isr_regs;
+typedef void (*isr_handler_t)(struct isr_regs *regs);
+void isr_register_handler(uint8_t n, isr_handler_t handler);
+void pic_clear_mask(uint8_t irq);
+
+/* ------------------------------------------------------------------ */
+/*  Scancode-to-ASCII translation tables                               */
+/* ------------------------------------------------------------------ */
 
 static const uint8_t scancode_to_ascii[128] = {
     [0x01] = 0x1B,
@@ -51,80 +74,210 @@ static const uint8_t shifted_scancode_to_ascii[128] = {
     [0x53] = '.',
 };
 
-uint8_t get_key(void) {
-    static uint8_t shift = 0;
-    static uint8_t ctrl = 0;
-    static uint8_t caps_lock = 0;
-    static uint8_t extended = 0;
+/* ------------------------------------------------------------------ */
+/*  Event ring buffer                                                  */
+/* ------------------------------------------------------------------ */
+
+#define EVENT_QUEUE_SIZE 64   /* must be power of 2 */
+
+static key_event_t event_queue[EVENT_QUEUE_SIZE];
+static volatile uint32_t eq_head = 0;  /* next write position */
+static volatile uint32_t eq_tail = 0;  /* next read position */
+
+static void eq_push(const key_event_t *ev) {
+    uint32_t next = (eq_head + 1) & (EVENT_QUEUE_SIZE - 1);
+    if (next == eq_tail)
+        return;  /* queue full, drop event */
+    event_queue[eq_head] = *ev;
+    eq_head = next;
+}
+
+static int eq_pop(key_event_t *out) {
+    if (eq_tail == eq_head)
+        return 0;  /* empty */
+    *out = event_queue[eq_tail];
+    eq_tail = (eq_tail + 1) & (EVENT_QUEUE_SIZE - 1);
+    return 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Key state bitmap (256 entries: 128 normal + 128 extended)          */
+/* ------------------------------------------------------------------ */
+
+static uint8_t key_state[256 / 8];  /* 32 bytes, one bit per scancode */
+
+static void set_key_state(uint8_t code, int pressed) {
+    if (pressed)
+        key_state[code / 8] |= (1 << (code % 8));
+    else
+        key_state[code / 8] &= ~(1 << (code % 8));
+}
+
+int keyboard_is_pressed(uint8_t code) {
+    return (key_state[code / 8] >> (code % 8)) & 1;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Modifier tracking                                                  */
+/* ------------------------------------------------------------------ */
+
+static uint8_t modifiers = 0;
+
+uint8_t keyboard_get_modifiers(void) {
+    return modifiers;
+}
+
+/* ------------------------------------------------------------------ */
+/*  IRQ1 handler                                                       */
+/* ------------------------------------------------------------------ */
+
+static uint8_t extended_flag = 0;
+
+static void keyboard_irq_handler(struct isr_regs *regs) {
+    (void)regs;
+
     uint8_t scancode;
-    uint8_t input_char;
-    uint8_t status;
+    asm volatile("inb $0x60, %%al" : "=a"(scancode));
 
-    while (1) {
-        do {
-            __asm__ __volatile__("inb $0x64, %%al" : "=a"(status));
-        } while (!(status & 1));
-
-        __asm__ __volatile__("inb $0x60, %%al" : "=a"(scancode));
-
-        /* Extended scancode prefix (arrow keys, right Ctrl, etc.) */
-        if (scancode == 0xE0) {
-            extended = 1;
-            continue;
-        }
-        if (extended) {
-            extended = 0;
-            if (scancode == 0x1D) { ctrl = 1; continue; }  /* Right Ctrl make */
-            if (scancode == 0x9D) { ctrl = 0; continue; }  /* Right Ctrl break */
-            continue;
-        }
-
-        /* Modifier key press/release */
-        switch (scancode) {
-        case LSHIFT_MAKE:  case RSHIFT_MAKE:  shift = 1; continue;
-        case LSHIFT_BREAK: case RSHIFT_BREAK: shift = 0; continue;
-        case LCTRL_MAKE:  ctrl = 1; continue;
-        case LCTRL_BREAK: ctrl = 0; continue;
-        case CAPS_LOCK_MAKE: caps_lock ^= 1; continue;
-        }
-
-        /* Ignore all other break (key release) codes */
-        if (scancode & 0x80)
-            continue;
-
-        /* Look up ASCII value based on shift state */
-        input_char = shift
-            ? shifted_scancode_to_ascii[scancode]
-            : scancode_to_ascii[scancode];
-
-        /* Caps Lock inverts letter case */
-        if (caps_lock) {
-            if (input_char >= 'a' && input_char <= 'z')
-                input_char -= 0x20;
-            else if (input_char >= 'A' && input_char <= 'Z')
-                input_char += 0x20;
-        }
-
-        /* Ctrl+letter produces control codes (Ctrl+A=1 .. Ctrl+Z=26) */
-        if (ctrl) {
-            uint8_t lower = input_char | 0x20;
-            if (lower >= 'a' && lower <= 'z') {
-                input_char = lower - 'a' + 1;
-                break;
-            }
-        }
-
-        /* Skip non-printable keys (F-keys, Alt, Num Lock, etc.) */
-        if (input_char == 0)
-            continue;
-
-        break;
+    /* Extended scancode prefix */
+    if (scancode == 0xE0) {
+        extended_flag = 1;
+        return;
     }
 
-    *(uint8_t *)0x1600 = input_char;
-    *(uint8_t *)0x1601 = scancode;
-    *(uint8_t *)0x1602 = shift;
-    *(uint8_t *)0x1603 = ctrl;
+    uint8_t is_extended = extended_flag;
+    extended_flag = 0;
 
-    return input_char;
+    /* Determine press/release */
+    uint8_t is_release = (scancode & 0x80) != 0;
+    uint8_t raw_sc = scancode & 0x7F;
+
+    /* Compute a combined code: extended keys get +128 offset */
+    uint8_t combined = is_extended ? (raw_sc | 0x80) : raw_sc;
+
+    /* Update key state bitmap */
+    set_key_state(combined, !is_release);
+
+    /* Update modifier tracking */
+    if (!is_extended) {
+        switch (raw_sc) {
+        case 0x2A: /* Left Shift */
+        case 0x36: /* Right Shift */
+            if (is_release)
+                modifiers &= ~KEY_MOD_SHIFT;
+            else
+                modifiers |= KEY_MOD_SHIFT;
+            break;
+        case 0x1D: /* Left Ctrl */
+            if (is_release)
+                modifiers &= ~KEY_MOD_CTRL;
+            else
+                modifiers |= KEY_MOD_CTRL;
+            break;
+        case 0x38: /* Left Alt */
+            if (is_release)
+                modifiers &= ~KEY_MOD_ALT;
+            else
+                modifiers |= KEY_MOD_ALT;
+            break;
+        case 0x3A: /* Caps Lock (toggle on press only) */
+            if (!is_release)
+                modifiers ^= KEY_MOD_CAPSLOCK;
+            break;
+        }
+    } else {
+        /* Extended modifiers */
+        switch (raw_sc) {
+        case 0x1D: /* Right Ctrl */
+            if (is_release)
+                modifiers &= ~KEY_MOD_CTRL;
+            else
+                modifiers |= KEY_MOD_CTRL;
+            break;
+        case 0x38: /* Right Alt */
+            if (is_release)
+                modifiers &= ~KEY_MOD_ALT;
+            else
+                modifiers |= KEY_MOD_ALT;
+            break;
+        }
+    }
+
+    /* Build the event */
+    key_event_t ev;
+    ev.scancode  = raw_sc;
+    ev.flags     = is_release ? KEY_EVENT_RELEASE : KEY_EVENT_PRESS;
+    if (is_extended)
+        ev.flags |= KEY_EVENT_EXTENDED;
+    ev.modifiers = modifiers;
+
+    /* Translate to ASCII (only for key presses of non-extended keys) */
+    ev.ascii = 0;
+    if (!is_release && !is_extended && raw_sc < 128) {
+        uint8_t shift = (modifiers & KEY_MOD_SHIFT) != 0;
+        uint8_t ch = shift
+            ? shifted_scancode_to_ascii[raw_sc]
+            : scancode_to_ascii[raw_sc];
+
+        /* Apply Caps Lock to letters */
+        if (modifiers & KEY_MOD_CAPSLOCK) {
+            if (ch >= 'a' && ch <= 'z')
+                ch -= 0x20;
+            else if (ch >= 'A' && ch <= 'Z')
+                ch += 0x20;
+        }
+
+        /* Ctrl+letter → control code */
+        if ((modifiers & KEY_MOD_CTRL) && ch) {
+            uint8_t lower = ch | 0x20;
+            if (lower >= 'a' && lower <= 'z')
+                ch = lower - 'a' + 1;
+        }
+
+        ev.ascii = ch;
+    }
+
+    eq_push(&ev);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public API                                                         */
+/* ------------------------------------------------------------------ */
+
+void keyboard_init(void) {
+    /* Drain any pending scancodes */
+    uint8_t status;
+    asm volatile("inb $0x64, %%al" : "=a"(status));
+    while (status & 1) {
+        uint8_t dummy;
+        asm volatile("inb $0x60, %%al" : "=a"(dummy));
+        (void)dummy;
+        asm volatile("inb $0x64, %%al" : "=a"(status));
+    }
+
+    /* Register IRQ1 handler (vector 33) and unmask IRQ1 */
+    isr_register_handler(33, keyboard_irq_handler);
+    pic_clear_mask(1);
+}
+
+int keyboard_poll_event(key_event_t *out) {
+    return eq_pop(out);
+}
+
+/*
+ * Blocking get_key() — backwards-compatible with the shell.
+ * Waits for a key-press event with a non-zero ASCII character.
+ */
+uint8_t get_key(void) {
+    key_event_t ev;
+    while (1) {
+        if (eq_pop(&ev)) {
+            /* Only return on press events with a printable/control ASCII */
+            if ((ev.flags & KEY_EVENT_PRESS) && ev.ascii != 0)
+                return ev.ascii;
+        } else {
+            /* No events pending — yield CPU until next interrupt */
+            asm volatile("sti; hlt");
+        }
+    }
 }
