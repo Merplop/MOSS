@@ -402,6 +402,52 @@ int vsnprintf(char *str, size_t size, const char *fmt, va_list ap) {
             buf_put_uint(str, size, &pos, val, 16, 8, '0', 0);
             break;
         }
+        case 'f': {
+            double val = va_arg(ap, double);
+            int neg = 0;
+            if (val < 0) { neg = 1; val = -val; }
+            int frac_digits = (precision >= 0) ? precision : 6;
+            /* Integer part */
+            unsigned long ipart = (unsigned long)val;
+            /* Fractional part: multiply by 10^frac_digits and round */
+            double frac = val - (double)ipart;
+            unsigned long fpart = 0;
+            double mult = 1.0;
+            for (int fi = 0; fi < frac_digits; fi++) mult *= 10.0;
+            fpart = (unsigned long)(frac * mult + 0.5);
+            /* Handle rounding overflow (e.g. 0.9999... → 1.0) */
+            unsigned long fmax = (unsigned long)mult;
+            if (fpart >= fmax) { fpart = 0; ipart++; }
+            /* Compute lengths for width padding */
+            char itmp[32]; int ilen = 0;
+            { unsigned long v = ipart;
+              if (v == 0) itmp[ilen++] = '0';
+              else while (v > 0) { itmp[ilen++] = '0' + (v % 10); v /= 10; }
+            }
+            int total = neg + ilen + (frac_digits > 0 ? 1 + frac_digits : 0);
+            if (!left_align)
+                for (int fi = total; fi < width; fi++)
+                    buf_putc(str, size, &pos, pad);
+            if (neg) buf_putc(str, size, &pos, '-');
+            for (int fi = ilen - 1; fi >= 0; fi--)
+                buf_putc(str, size, &pos, itmp[fi]);
+            if (frac_digits > 0) {
+                buf_putc(str, size, &pos, '.');
+                /* Print fractional digits with leading zeros */
+                char ftmp[32]; int flen = 0;
+                if (fpart == 0) { ftmp[flen++] = '0'; }
+                else { unsigned long fv = fpart;
+                       while (fv > 0) { ftmp[flen++] = '0' + (fv % 10); fv /= 10; } }
+                for (int fi = flen; fi < frac_digits; fi++)
+                    buf_putc(str, size, &pos, '0');
+                for (int fi = flen - 1; fi >= 0; fi--)
+                    buf_putc(str, size, &pos, ftmp[fi]);
+            }
+            if (left_align)
+                for (int fi = total; fi < width; fi++)
+                    buf_putc(str, size, &pos, ' ');
+            break;
+        }
         case 'c': {
             char c = (char)va_arg(ap, int);
             buf_putc(str, size, &pos, c);

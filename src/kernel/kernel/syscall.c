@@ -11,6 +11,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdio.h>
 #include <kernel/syscall.h>
 #include <kernel/sched.h>
 #include <kernel/tty.h>
@@ -43,10 +44,22 @@ void isr_register_handler(uint8_t n, isr_handler_t handler);
 static int32_t sys_exit(struct isr_regs *regs) {
     int code = (int)regs->ebx;
 
-    /* If a parent task (shell) is waiting, unblock it */
+    /* Clean up per-process user pages and page directory. */
+    task_t *current = get_current_task();
+    if (current)
+        elf_cleanup_process(current);
+
+    /* If a parent task (shell) is waiting via elf_load_and_exec, unblock it */
     task_t *parent = elf_get_waiting_parent();
     if (parent)
         unblock_task(parent);
+
+    /* Also try to unblock the parent if it's waiting via waitpid */
+    if (current) {
+        task_t *ptask = find_task_by_pid(current->parent_pid);
+        if (ptask && ptask->state == TASK_BLOCKED && ptask != parent)
+            unblock_task(ptask);
+    }
 
     exit_task(code);
     /* Should not return, but just in case: */
@@ -770,6 +783,315 @@ static int32_t sys_dup2(struct isr_regs *regs) {
     return (int32_t)new_fd;
 }
 
+/* ------------------------------------------------------------------ */
+/*  Fork helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+/* Paging helpers for fork */
+extern uint32_t *paging_create_user_directory(void);
+extern void paging_free_user_directory(uint32_t *pd);
+extern void paging_map_page_in(uint32_t *pd, uint32_t virt, uint32_t phys,
+                               uint32_t flags);
+extern uint32_t paging_get_physical_in(uint32_t *pd, uint32_t virt);
+
+/* ELF per-process page management */
+extern int elf_alloc_page_slot(void);
+extern void elf_free_page_slot(int slot);
+extern int elf_get_slot_page_count(int slot);
+extern uint32_t elf_get_slot_vaddr(int slot, int index);
+extern uint32_t elf_get_slot_paddr(int slot, int index);
+extern void *elf_map_user_page_in(uint32_t vaddr, uint32_t *page_dir, int slot);
+
+/*
+ * Entry point for fork child tasks.
+ * Restores saved user-mode state and does iret to ring 3 with eax=0.
+ *
+ * IMPORTANT: All struct field reads must happen BEFORE the asm block,
+ * because the asm clobbers GP registers that the compiler may use to
+ * dereference the task_t pointer.  We read everything into locals first.
+ */
+static void fork_child_entry(void) {
+    task_t *self = get_current_task();
+
+    if (!self) {
+        printf("fork_child_entry: get_current_task() returned NULL!\r\n");
+        panic();
+    }
+
+    /* Read ALL values from the struct into locals BEFORE entering asm.
+     * The asm clobbers ebp/edi/esi/etc, so any "m" constraint that relied
+     * on those registers to reach `self->field` would read garbage. */
+    uint32_t f_eip    = self->fork_eip;
+    uint32_t f_esp    = self->fork_esp;
+    uint32_t f_eflags = self->fork_eflags;
+    uint32_t f_ebx    = self->fork_ebx;
+    uint32_t f_ecx    = self->fork_ecx;
+    uint32_t f_edx    = self->fork_edx;
+    uint32_t f_esi    = self->fork_esi;
+    uint32_t f_edi    = self->fork_edi;
+    uint32_t f_ebp    = self->fork_ebp;
+
+    printf("fork_child_entry: PID=%u  eip=0x%x  esp=0x%x  eflags=0x%x\r\n",
+           self->pid, f_eip, f_esp, f_eflags);
+    printf("  ebx=0x%x ecx=0x%x edx=0x%x esi=0x%x edi=0x%x ebp=0x%x\r\n",
+           f_ebx, f_ecx, f_edx, f_esi, f_edi, f_ebp);
+    printf("  page_dir=0x%x  slot=%d\r\n",
+           (uint32_t)self->page_dir, self->user_pages_slot);
+
+    /* Validate the saved user EIP looks sane (in user-space range) */
+    if (f_eip < 0x08048000u || f_eip >= 0xC0000000u) {
+        printf("fork_child_entry: INVALID eip 0x%x (not in user range)\r\n", f_eip);
+        panic();
+    }
+    /* Validate user ESP is in the user stack region */
+    if (f_esp < 0x08000000u || f_esp >= 0xC0000000u) {
+        printf("fork_child_entry: INVALID esp 0x%x\r\n", f_esp);
+        panic();
+    }
+
+    asm volatile(
+        "cli\n\t"
+        /* Load user data segment into all segment registers */
+        "movw $0x23, %%ax\n\t"
+        "movw %%ax, %%ds\n\t"
+        "movw %%ax, %%es\n\t"
+        "movw %%ax, %%fs\n\t"
+        "movw %%ax, %%gs\n\t"
+        /* Build the iret frame on the kernel stack */
+        "pushl $0x23\n\t"        /* SS  = user data */
+        "pushl %[esp]\n\t"       /* ESP = saved user esp */
+        "pushl %[eflags]\n\t"    /* EFLAGS */
+        "pushl $0x1B\n\t"        /* CS  = user code */
+        "pushl %[eip]\n\t"       /* EIP = saved user eip */
+        /* Now restore GP registers (safe — iret frame already pushed) */
+        "movl %[ebp], %%ebp\n\t"
+        "movl %[edi], %%edi\n\t"
+        "movl %[esi], %%esi\n\t"
+        "movl %[edx], %%edx\n\t"
+        "movl %[ecx], %%ecx\n\t"
+        "movl %[ebx], %%ebx\n\t"
+        /* eax = 0 → fork() returns 0 in the child */
+        "xorl %%eax, %%eax\n\t"
+        "iret\n\t"
+        :
+        : [eip]    "r" (f_eip),
+          [esp]    "r" (f_esp),
+          [eflags] "r" (f_eflags),
+          [ebp]    "m" (f_ebp),
+          [edi]    "m" (f_edi),
+          [esi]    "m" (f_esi),
+          [edx]    "m" (f_edx),
+          [ecx]    "m" (f_ecx),
+          [ebx]    "m" (f_ebx)
+        : "eax", "memory"
+    );
+    __builtin_unreachable();
+}
+
+/* SYS_FORK (23): create a copy of the current process.
+ *   No arguments.
+ *   Returns: child PID to parent, 0 to child, -1 on error. */
+static int32_t sys_fork(struct isr_regs *regs) {
+    task_t *parent = get_current_task();
+    if (!parent) {
+        printf("fork: get_current_task() == NULL\r\n");
+        return -1;
+    }
+
+    printf("fork: parent PID=%u  page_dir=0x%x  slot=%d\r\n",
+           parent->pid, (uint32_t)parent->page_dir, parent->user_pages_slot);
+
+    /* Parent must have a page directory and user pages slot */
+    if (!parent->page_dir) {
+        printf("fork: parent has no page directory!\r\n");
+        return -1;
+    }
+    if (parent->user_pages_slot < 0) {
+        printf("fork: parent has no user pages slot!\r\n");
+        return -1;
+    }
+
+    /* Dump the saved user-mode register frame for debugging */
+    printf("fork: isr_regs: eip=0x%x  useresp=0x%x  eflags=0x%x\r\n",
+           regs->eip, regs->useresp, regs->eflags);
+    printf("fork: regs: eax=0x%x ebx=0x%x ecx=0x%x edx=0x%x\r\n",
+           regs->eax, regs->ebx, regs->ecx, regs->edx);
+    printf("fork: regs: esi=0x%x edi=0x%x ebp=0x%x ds=0x%x\r\n",
+           regs->esi, regs->edi, regs->ebp, regs->ds);
+    printf("fork: regs: cs=0x%x ss=0x%x\r\n", regs->cs, regs->ss);
+
+    /* Validate user EIP */
+    if (regs->eip < 0x08048000u || regs->eip >= 0xC0000000u) {
+        printf("fork: INVALID user eip=0x%x\r\n", regs->eip);
+        return -1;
+    }
+    /* Validate user ESP */
+    if (regs->useresp < 0x08000000u || regs->useresp >= 0xC0000000u) {
+        printf("fork: INVALID user esp=0x%x\r\n", regs->useresp);
+        return -1;
+    }
+
+    /* Create a new page directory for the child */
+    uint32_t *child_pd = paging_create_user_directory();
+    if (!child_pd) {
+        printf("fork: paging_create_user_directory() failed\r\n");
+        return -1;
+    }
+    printf("fork: child PD at 0x%x\r\n", (uint32_t)child_pd);
+
+    /* Allocate a user pages tracking slot for the child */
+    int child_slot = elf_alloc_page_slot();
+    if (child_slot < 0) {
+        printf("fork: elf_alloc_page_slot() failed (all %d slots busy)\r\n", 16);
+        paging_free_user_directory(child_pd);
+        return -1;
+    }
+    printf("fork: child got page slot %d\r\n", child_slot);
+
+    /* Copy all parent user pages to new physical pages in child's PD */
+    int parent_slot = parent->user_pages_slot;
+    int parent_page_count = elf_get_slot_page_count(parent_slot);
+    printf("fork: copying %d user pages from parent slot %d\r\n",
+           parent_page_count, parent_slot);
+
+    for (int i = 0; i < parent_page_count; i++) {
+        uint32_t vaddr = elf_get_slot_vaddr(parent_slot, i);
+        uint32_t parent_paddr = elf_get_slot_paddr(parent_slot, i);
+
+        /* Allocate a new physical page and copy parent's data */
+        void *child_page = elf_map_user_page_in(vaddr, child_pd, child_slot);
+        if (!child_page) {
+            printf("fork: elf_map_user_page_in(0x%x) failed at page %d\r\n", vaddr, i);
+            elf_free_page_slot(child_slot);
+            paging_free_user_directory(child_pd);
+            return -1;
+        }
+
+        /* Copy page content from parent */
+        memcpy(child_page, (void *)parent_paddr, SYS_PAGE_SIZE);
+
+        /* Verify the mapping is correct in the child PD */
+        uint32_t check = paging_get_physical_in(child_pd, vaddr);
+        if (check != (uint32_t)child_page) {
+            printf("fork: page verify FAILED: vaddr=0x%x  expected=0x%x  got=0x%x\r\n",
+                   vaddr, (uint32_t)child_page, check);
+        }
+    }
+    printf("fork: page copy complete\r\n");
+
+    /* Create child task */
+    task_t child_task = task_create(fork_child_entry, parent->priority);
+    if (child_task.esp == 0 && child_task.stack == NULL) {
+        printf("fork: task_create() failed (no kernel stacks?)\r\n");
+        elf_free_page_slot(child_slot);
+        paging_free_user_directory(child_pd);
+        return -1;
+    }
+    printf("fork: child task PID=%u  kernel_stack=0x%x  esp=0x%x\r\n",
+           child_task.pid, (uint32_t)child_task.stack, child_task.esp);
+
+    /* Copy parent state to child */
+    child_task.page_dir        = child_pd;
+    child_task.user_pages_slot = child_slot;
+    child_task.parent_pid      = parent->pid;
+    child_task.brk_start       = parent->brk_start;
+    child_task.brk_current     = parent->brk_current;
+
+    /* Copy fd table */
+    memcpy(child_task.fd_table, parent->fd_table, sizeof(parent->fd_table));
+
+    /* Save parent's user-mode registers so child can resume.
+     * The isr_regs frame has the user-mode state at the point of the
+     * int $0x80 syscall. */
+    child_task.fork_eip    = regs->eip;
+    child_task.fork_esp    = regs->useresp;
+    child_task.fork_eflags = regs->eflags;
+    child_task.fork_ebx    = regs->ebx;
+    child_task.fork_ecx    = regs->ecx;
+    child_task.fork_edx    = regs->edx;
+    child_task.fork_esi    = regs->esi;
+    child_task.fork_edi    = regs->edi;
+    child_task.fork_ebp    = regs->ebp;
+    child_task.fork_ds     = regs->ds;
+
+    printf("fork: saved child state: eip=0x%x esp=0x%x eflags=0x%x\r\n",
+           child_task.fork_eip, child_task.fork_esp, child_task.fork_eflags);
+
+    admit_task(&child_task);
+    printf("fork: child admitted, returning child PID %u to parent\r\n",
+           child_task.pid);
+
+    /* Parent returns child PID */
+    return (int32_t)child_task.pid;
+}
+
+/* SYS_WAITPID (24): wait for a child process to exit.
+ *   ebx = pid (-1 = any child)
+ *   ecx = pointer to int for exit status (can be NULL)
+ *   Returns: PID of exited child, or -1 on error. */
+static int32_t sys_waitpid(struct isr_regs *regs) {
+    int32_t  wait_pid = (int32_t)regs->ebx;
+    int     *status   = (int *)regs->ecx;
+
+    task_t *parent = get_current_task();
+    if (!parent)
+        return -1;
+
+    /* Loop until we find an exited child matching the criteria */
+    for (;;) {
+        int found_child = 0;
+
+        /* Scan all tasks for zombie children of this parent */
+        /* Try to find a matching zombie child first */
+        if (wait_pid > 0) {
+            /* Wait for specific PID */
+            task_t *child = find_task_by_pid((uint32_t)wait_pid);
+            if (!child || child->parent_pid != parent->pid)
+                return -1;  /* no such child */
+            found_child = 1;
+            if (child->state == TASK_ZOMBIE) {
+                int32_t child_pid = (int32_t)child->pid;
+                if (status)
+                    *status = child->exit_code;
+                remove_task(child);
+                return child_pid;
+            }
+        } else {
+            /* wait_pid == -1: wait for any child */
+            /* Scan for any zombie child or any child at all */
+            task_t *zombie_child = NULL;
+            /* We need to iterate the task list — use find_task_by_pid
+             * in a loop or add a dedicated function. For simplicity,
+             * just block and retry. */
+            /* Check all tasks by iterating PIDs (simple approach) */
+            for (uint32_t pid = 0; pid < 1000; pid++) {
+                task_t *child = find_task_by_pid(pid);
+                if (!child || child->parent_pid != parent->pid)
+                    continue;
+                found_child = 1;
+                if (child->state == TASK_ZOMBIE) {
+                    zombie_child = child;
+                    break;
+                }
+            }
+
+            if (zombie_child) {
+                int32_t child_pid = (int32_t)zombie_child->pid;
+                if (status)
+                    *status = zombie_child->exit_code;
+                remove_task(zombie_child);
+                return child_pid;
+            }
+        }
+
+        if (!found_child)
+            return -1;  /* no children at all → ECHILD */
+
+        /* Child exists but hasn't exited yet — block and retry */
+        block_task(parent);
+    }
+}
+
 typedef int32_t (*syscall_fn_t)(struct isr_regs *regs);
 
 static syscall_fn_t syscall_table[NUM_SYSCALLS] = {
@@ -796,6 +1118,8 @@ static syscall_fn_t syscall_table[NUM_SYSCALLS] = {
     [SYS_GETTIME]  = sys_gettime,
     [SYS_DUP]      = sys_dup,
     [SYS_DUP2]     = sys_dup2,
+    [SYS_FORK]     = sys_fork,
+    [SYS_WAITPID]  = sys_waitpid,
 };
 
 /* ------------------------------------------------------------------ */

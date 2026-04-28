@@ -32,8 +32,10 @@
 #define SYS_GETTIME     20
 #define SYS_DUP         21
 #define SYS_DUP2        22
+#define SYS_FORK        23
+#define SYS_WAITPID     24
 
-#define NUM_SYSCALLS 23
+#define NUM_SYSCALLS 25
 
 /* open() flags (matching Linux values) */
 #define O_RDONLY  0x0000

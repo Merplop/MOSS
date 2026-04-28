@@ -104,6 +104,19 @@ int dup2(int oldfd, int newfd) {
     return ret;
 }
 
+pid_t fork(void) {
+    int32_t ret = _syscall0(SYS_FORK);
+    if (ret < 0) { errno = EAGAIN; return -1; }
+    return (pid_t)ret;
+}
+
+pid_t waitpid(pid_t pid, int *status, int options) {
+    (void)options;  /* options not supported yet */
+    int32_t ret = _syscall2(SYS_WAITPID, (uint32_t)(int32_t)pid, (uint32_t)status);
+    if (ret < 0) { errno = ECHILD; return -1; }
+    return (pid_t)ret;
+}
+
 int execvp(const char *file, char *const argv[]) {
     (void)file; (void)argv;
     errno = ENOSYS;

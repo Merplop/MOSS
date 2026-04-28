@@ -53,6 +53,21 @@ typedef struct task_s {
     uint32_t brk_start;      /* initial program break (page-aligned end of loaded segments) */
     uint32_t brk_current;    /* current program break */
     fd_entry_t fd_table[MAX_OPEN_FILES];
+
+    /* Per-process paging */
+    uint32_t *page_dir;      /* this task's page directory (NULL = kernel_page_dir) */
+    int user_pages_slot;     /* index into per-task user page tracking (-1 = none) */
+
+    /* Parent/child relationship */
+    uint32_t parent_pid;     /* PID of the parent task (for waitpid) */
+
+    /* Fork child saved user-mode state */
+    uint32_t fork_eip;
+    uint32_t fork_esp;
+    uint32_t fork_eflags;
+    uint32_t fork_ebx, fork_ecx, fork_edx;
+    uint32_t fork_esi, fork_edi, fork_ebp;
+    uint32_t fork_ds;
 } task_t;
 
 void init_scheduler(void);
@@ -66,6 +81,9 @@ void timer_tick(void);
 void block_task(task_t *task);
 void unblock_task(task_t *task);
 void exit_task(int exit_code);
+
+/* Find a task by PID (returns NULL if not found). */
+task_t *find_task_by_pid(uint32_t pid);
 
 /* Assembly context switch (defined in arch/i386/switch.S) */
 extern void switch_context(uint32_t *old_esp, uint32_t new_esp);

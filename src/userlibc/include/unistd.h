@@ -34,6 +34,8 @@ int chdir(const char *path);
 int unlink(const char *path);
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
+pid_t fork(void);
+pid_t waitpid(pid_t pid, int *status, int options);
 int access(const char *path, int mode);
 int execvp(const char *file, char *const argv[]);
 

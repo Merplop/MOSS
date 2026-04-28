@@ -95,7 +95,7 @@ typedef struct {
  * Returns 0 on success (after the program exits), -1 on error. */
 int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv);
 
-/* Clean up user-mode page mappings (called by SYS_EXIT). */
+/* Clean up user-mode page mappings (legacy no-op). */
 void elf_reset_user_pages(void);
 
 /* Get the task that should be unblocked when the user program exits. */
@@ -103,8 +103,25 @@ struct task_s;
 struct task_s *elf_get_waiting_parent(void);
 
 /* Map a zeroed physical page at a user-space virtual address.
- * Returns a pointer to the page (identity-mapped), or NULL on failure.
- * The page is tracked for cleanup via elf_reset_user_pages(). */
+ * Uses the current task's page directory and page slot.
+ * Returns a pointer to the page (identity-mapped), or NULL on failure. */
 void *elf_map_user_page(uint32_t vaddr);
+
+/* Map a zeroed physical page into a specific page directory and slot. */
+void *elf_map_user_page_in(uint32_t vaddr, uint32_t *page_dir, int slot);
+
+/* Allocate a user pages tracking slot. Returns slot index or -1. */
+int elf_alloc_page_slot(void);
+
+/* Free all user pages in a slot and release it. */
+void elf_free_page_slot(int slot);
+
+/* Clean up a process's user pages, page tables, and page directory. */
+void elf_cleanup_process(struct task_s *task);
+
+/* Get slot page info (for fork duplication). */
+int elf_get_slot_page_count(int slot);
+uint32_t elf_get_slot_vaddr(int slot, int index);
+uint32_t elf_get_slot_paddr(int slot, int index);
 
 #endif /* _KERNEL_ELF_H */

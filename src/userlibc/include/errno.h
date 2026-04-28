@@ -16,6 +16,7 @@ extern int errno;
 #define EBADF    9
 #define ENOSYS  38
 #define EAGAIN  11
+#define ECHILD  10
 #define EINTR    4
 #define EIO      5
 

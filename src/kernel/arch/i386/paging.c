@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <kernel/kernel.h>
+#include <kernel/memory_manager.h>
 #include "idt.h"
 #include "paging.h"
 
@@ -110,6 +111,28 @@ static void page_fault_handler(struct isr_regs *regs)
     print_hex(regs->eip);
     printf("\r\n");
 
+    /* Extra diagnostic info */
+    printf("  err_code=0x%x  cs=0x%x  ss=0x%x  useresp=0x%x\r\n",
+           regs->err_code, regs->cs, regs->ss, regs->useresp);
+    printf("  eax=0x%x  ebx=0x%x  ecx=0x%x  edx=0x%x\r\n",
+           regs->eax, regs->ebx, regs->ecx, regs->edx);
+    printf("  esi=0x%x  edi=0x%x  ebp=0x%x  ds=0x%x\r\n",
+           regs->esi, regs->edi, regs->ebp, regs->ds);
+    printf("  CR3=0x%x  current_dir=0x%x  kernel_pd=0x%x\r\n",
+           (uint32_t)current_directory,
+           (uint32_t)current_directory,
+           (uint32_t)kernel_page_dir);
+
+    /* Check if the faulting page is mapped in current directory */
+    uint32_t dir_idx   = fault_addr >> 22;
+    uint32_t table_idx = (fault_addr >> 12) & 0x3FF;
+    printf("  PDE[%u]=0x%x", dir_idx, current_directory[dir_idx]);
+    if (current_directory[dir_idx] & PDE_PRESENT) {
+        uint32_t *pt = (uint32_t *)(current_directory[dir_idx] & 0xFFFFF000);
+        printf("  PTE[%u]=0x%x", table_idx, pt[table_idx]);
+    }
+    printf("\r\n");
+
     panic();
 }
 
@@ -171,6 +194,118 @@ uint32_t *paging_get_page_dir(void)
     return kernel_page_dir;
 }
 
+/* Number of kernel PD entries used for identity mapping. */
+static uint32_t kernel_pd_entries_used = 0;
+
+/* ------------------------------------------------------------------ */
+/*  Per-process page directory support                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Map a page in a specific page directory.
+ * Allocates a new page table via the physical allocator if needed.
+ */
+void paging_map_page_in(uint32_t *pd, uint32_t virt, uint32_t phys,
+                        uint32_t flags)
+{
+    uint32_t dir_idx   = virt >> 22;
+    uint32_t table_idx = (virt >> 12) & 0x3FF;
+
+    if (!(pd[dir_idx] & PDE_PRESENT)) {
+        uint32_t *new_table = allocate_blocks(1);
+        if (!new_table) {
+            printf("[PANIC] paging_map_page_in: no memory for page table\r\n");
+            panic();
+        }
+        memset(new_table, 0, PAGE_SIZE);
+        pd[dir_idx] = ((uint32_t)new_table)
+                       | PDE_PRESENT | PDE_WRITABLE | PDE_USER;
+    }
+
+    /* Identity mapping: PDE address field IS the virtual address of the table */
+    uint32_t *pt = (uint32_t *)(pd[dir_idx] & 0xFFFFF000);
+    pt[table_idx] = (phys & 0xFFFFF000) | (flags & 0xFFF) | PTE_PRESENT;
+}
+
+/*
+ * Look up a physical address in a specific page directory.
+ */
+uint32_t paging_get_physical_in(uint32_t *pd, uint32_t virt)
+{
+    uint32_t dir_idx   = virt >> 22;
+    uint32_t table_idx = (virt >> 12) & 0x3FF;
+
+    if (!(pd[dir_idx] & PDE_PRESENT))
+        return 0;
+
+    uint32_t *pt = (uint32_t *)(pd[dir_idx] & 0xFFFFF000);
+    uint32_t entry = pt[table_idx];
+    if (!(entry & PTE_PRESENT))
+        return 0;
+
+    return (entry & 0xFFFFF000) | (virt & 0xFFF);
+}
+
+/*
+ * Create a new page directory for a user process.
+ * Kernel identity-map entries are shared (same page tables).
+ */
+uint32_t *paging_create_user_directory(void)
+{
+    uint32_t *new_dir = allocate_blocks(1);
+    if (!new_dir)
+        return NULL;
+
+    memset(new_dir, 0, PAGE_SIZE);
+
+    /* Copy all kernel PD entries (shared page tables). */
+    for (uint32_t i = 0; i < TABLES_PER_DIR; i++) {
+        if (kernel_page_dir[i] & PDE_PRESENT)
+            new_dir[i] = kernel_page_dir[i];
+    }
+
+    return new_dir;
+}
+
+/*
+ * Free a user-process page directory.
+ * Frees per-process page tables (those NOT in the kernel PD).
+ * Does NOT free user data pages — caller must do that first.
+ */
+void paging_free_user_directory(uint32_t *pd)
+{
+    if (!pd || pd == kernel_page_dir)
+        return;
+
+    for (uint32_t i = 0; i < TABLES_PER_DIR; i++) {
+        if (!(pd[i] & PDE_PRESENT))
+            continue;
+        /* If this PD entry is also in the kernel PD, it's a shared table. */
+        if (kernel_page_dir[i] & PDE_PRESENT) {
+            uint32_t kern_pt = kernel_page_dir[i] & 0xFFFFF000;
+            uint32_t user_pt = pd[i] & 0xFFFFF000;
+            if (kern_pt == user_pt)
+                continue;  /* shared kernel table — don't free */
+        }
+        /* Per-process page table: free it. */
+        uint32_t *pt = (uint32_t *)(pd[i] & 0xFFFFF000);
+        free_blocks(pt, 1);
+    }
+
+    free_blocks(pd, 1);
+}
+
+/*
+ * Switch the active page directory (writes CR3).
+ */
+void paging_switch_directory(uint32_t *pd)
+{
+    if (pd != current_directory) {
+        current_directory = pd;
+        write_cr3((uint32_t)pd);
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Initialization                                                    */
 /* ------------------------------------------------------------------ */
@@ -221,6 +356,8 @@ void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size)
 
         kernel_page_dir[t] = ((uint32_t)table) | PDE_PRESENT | PDE_WRITABLE;
     }
+
+    kernel_pd_entries_used = num_tables;
 
     /* Identity-map the framebuffer (video RAM at a high physical address).
      * This must happen before enabling paging so the terminal keeps working. */

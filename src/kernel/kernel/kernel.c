@@ -258,7 +258,7 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		                           (mod_size + BLOCK_SIZE - 1) & ~(BLOCK_SIZE - 1));
 
 		ramdisk_init(&g_ramdisk, (void *)mod->mod_start, mod_size);
-		int rc = ext2_init(&g_ramdisk.dev, 0, 0);
+		int rc = ext2_init(&g_ramdisk.dev, 0, 1);
 		if (rc == 0) {
 			printf("ext2 mounted from ramdisk\r\n");
 			fs_mounted = 1;

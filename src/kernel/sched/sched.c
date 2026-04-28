@@ -11,31 +11,15 @@
 /* Update the TSS kernel stack on every context switch. */
 extern void tss_set_kernel_stack(uint32_t esp0);
 
-/*
- * Static pool for scheduler nodes and task stacks.
- *
- * The kernel's physical memory manager (allocate_blocks) is initialised
- * with mbd->mmap_length which is the size of the GRUB memory-map
- * *buffer* — typically ~100 bytes — so max_blocks ends up 0 and every
- * allocation via malloc / allocate_blocks returns NULL.
- *
- * Until the memory manager is fixed, we use small BSS pools so the
- * scheduler can function without any dynamic allocation.
- */
-#define MAX_STATIC_TASKS 16
+/* Per-process page directory switching. */
+extern uint32_t *paging_get_page_dir(void);
+extern void paging_switch_directory(uint32_t *pd);
 
 typedef struct sched_list_s {
     task_t t;
     struct sched_list_s *next;
     struct sched_list_s *prev;
 } sched_list_t;
-
-static sched_list_t  static_nodes[MAX_STATIC_TASKS];
-static int           static_nodes_used = 0;
-
-static uint8_t static_stacks[MAX_STATIC_TASKS][TASK_STACK_SIZE]
-    __attribute__((aligned(16)));
-static int     static_stacks_used = 0;
 
 static sched_list_t *sched_list_head = NULL;
 static sched_list_t *current_node = NULL;
@@ -85,6 +69,19 @@ task_t task_create(void (*entry)(void), long priority) {
     t.brk_start   = 0;
     t.brk_current = 0;
 
+    /* Per-process paging defaults */
+    t.page_dir = NULL;           /* NULL = use kernel_page_dir */
+    t.user_pages_slot = -1;      /* no user pages by default */
+    t.parent_pid = 0;
+
+    /* Fork child state (zeroed) */
+    t.fork_eip = 0;
+    t.fork_esp = 0;
+    t.fork_eflags = 0;
+    t.fork_ebx = t.fork_ecx = t.fork_edx = 0;
+    t.fork_esi = t.fork_edi = t.fork_ebp = 0;
+    t.fork_ds = 0;
+
     /* Initialize file descriptor table */
     memset(t.fd_table, 0, sizeof(t.fd_table));
     /* fd 0 = stdin */
@@ -98,14 +95,12 @@ task_t task_create(void (*entry)(void), long priority) {
     t.fd_table[2].flags = FD_FLAG_USED | FD_FLAG_WRITABLE;
 
     if (entry) {
-        /* Grab a kernel stack from the static pool */
-        if (static_stacks_used >= MAX_STATIC_TASKS) {
-            /* No stacks left — return a task that will never run */
-            t.stack = NULL;
-            t.esp   = 0;
+        /* Dynamically allocate a kernel stack */
+        t.stack = (uint32_t *)malloc(TASK_STACK_SIZE);
+        if (t.stack == NULL) {
+            t.esp = 0;
             return t;
         }
-        t.stack = (uint32_t *)static_stacks[static_stacks_used++];
 
         /*
          * Build the initial stack frame that switch_context expects.
@@ -145,16 +140,9 @@ int get_task_count(void) {
 }
 
 void admit_task(task_t *new_task) {
-    sched_list_t *new_node;
-
-    /* Try the static pool first; fall back to malloc. */
-    if (static_nodes_used < MAX_STATIC_TASKS) {
-        new_node = &static_nodes[static_nodes_used++];
-    } else {
-        new_node = (sched_list_t *)malloc(sizeof(sched_list_t));
-        if (new_node == NULL)
-            return;
-    }
+    sched_list_t *new_node = (sched_list_t *)malloc(sizeof(sched_list_t));
+    if (new_node == NULL)
+        return;
 
     new_node->t = *new_task;
 
@@ -191,10 +179,9 @@ void remove_task(task_t *task_to_remove) {
                 if (current_node == node)
                     current_node = node->next;
             }
-            /* Only free dynamically allocated nodes (not from static pool) */
-            if (node < &static_nodes[0] ||
-                node >= &static_nodes[MAX_STATIC_TASKS])
-                free(node);
+            if (node->t.stack != NULL)
+                free(node->t.stack);
+            free(node);
             task_count--;
             return;
         }
@@ -233,6 +220,13 @@ void schedule(void) {
                 if (current_node->t.stack != NULL)
                     tss_set_kernel_stack((uint32_t)current_node->t.stack
                                          + TASK_STACK_SIZE);
+
+                /* Switch to the new task's page directory. */
+                uint32_t *new_pd = current_node->t.page_dir;
+                if (!new_pd)
+                    new_pd = paging_get_page_dir();
+                paging_switch_directory(new_pd);
+
                 switch_context(&prev_node->t.esp, current_node->t.esp);
             }
 
@@ -285,6 +279,21 @@ void exit_task(int exit_code) {
     current->state = TASK_ZOMBIE;
     current->exit_code = exit_code;
     schedule();
+}
+
+/* Find a task by PID. Returns NULL if not found. */
+task_t *find_task_by_pid(uint32_t pid) {
+    if (sched_list_head == NULL)
+        return NULL;
+
+    sched_list_t *node = sched_list_head;
+    do {
+        if (node->t.pid == pid)
+            return &node->t;
+        node = node->next;
+    } while (node != sched_list_head);
+
+    return NULL;
 }
 
 
