@@ -1,1 +1,7 @@
 src/moss_disk.img
+
+# External subsystems
+src/bash/
+src/coreutils/
+src/doomgeneric/
+src/quakegeneric-main/
