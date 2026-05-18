@@ -1,7 +1,12 @@
 src/moss_disk.img
+moss_logo_transparent.png
+serial.log
 
 # External subsystems
 src/bash/
 src/coreutils/
 src/doomgeneric/
 src/quakegeneric-main/
+src/tcc/
+src/musl-1.2.6/
+src/musl-out/

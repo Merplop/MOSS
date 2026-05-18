@@ -1831,6 +1831,17 @@ static int32_t sys_execve(struct isr_regs *regs) {
         }
     }
 
+    /* Ensure argv[0] is the resolved path so shebang scripts get
+     * the full path to the script file (not just the basename). */
+    if (argc > 0) {
+        size_t plen = strlen(path);
+        if (buf_off + (int)plen + 1 <= (int)sizeof(karg_buf)) {
+            memcpy(karg_buf + buf_off, path, plen + 1);
+            kargv[0] = karg_buf + buf_off;
+            buf_off += (int)plen + 1;
+        }
+    }
+
     /* Copy envp from the kernel environment store */
     env_init();
     char *kenvp[ENV_MAX_VARS];

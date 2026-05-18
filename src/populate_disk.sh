@@ -119,11 +119,35 @@ else
     echo "  WARNING: bash binary not found at $BASH_BIN"
 fi
 
+# --- Neofetch ---
+echo "Copying neofetch ..."
+NEOFETCH_BIN="$SCRIPT_DIR/neofetch"
+if [ -f "$NEOFETCH_BIN" ]; then
+    cp "$NEOFETCH_BIN" "$MOUNT_DIR/bin/neofetch"
+    chmod 755 "$MOUNT_DIR/bin/neofetch"
+    echo "  neofetch installed"
+else
+    echo "  WARNING: neofetch not found at $NEOFETCH_BIN"
+fi
+
+# --- Simple test script (verifies shebang execution) ---
+echo "Creating /bin/test_sh ..."
+cat > "$MOUNT_DIR/bin/test_sh" << 'TESTSH'
+#!/bin/bash
+echo "shebang works!"
+TESTSH
+chmod 755 "$MOUNT_DIR/bin/test_sh"
+
 # --- Root home directory ---
 echo "Creating /root/.bashrc ..."
 cat > "$MOUNT_DIR/root/.bashrc" << 'BASHRC'
 export PS1='\u@\h:\w\$ '
 export PATH=/bin:/usr/bin
+
+# Enable color support
+export LS_COLORS='rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.gz=01;31:*.bz2=01;31:*.xz=01;31:*.zip=01;31:*.jpg=01;35:*.png=01;35:*.gif=01;35:*.bmp=01;35:*.c=00;33:*.h=00;33:*.o=01;30'
+alias ls='ls --color=auto'
+alias dir='dir --color=auto'
 BASHRC
 
 cat > "$MOUNT_DIR/root/.profile" << 'PROFILE'

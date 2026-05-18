@@ -255,6 +255,69 @@ static int elf_validate(const Elf32_Ehdr *ehdr) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Shebang (#!) script handling                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Check if a file starts with "#!" and if so, parse the interpreter
+ * path and optional argument.  Returns 0 if it's a shebang script
+ * (interp_path and interp_arg filled in), -1 if not a script.
+ */
+static int parse_shebang(uint32_t ino, char *interp_path, size_t path_size,
+                         char *interp_arg, size_t arg_size) {
+    char buf[256];
+    int n = ext2_read_file(ino, buf, 0, sizeof(buf) - 1);
+    if (n < 2)
+        return -1;
+    buf[n] = '\0';
+
+    if (buf[0] != '#' || buf[1] != '!')
+        return -1;
+
+    /* Find end of line */
+    char *line = buf + 2;
+    char *eol = line;
+    while (*eol && *eol != '\n' && *eol != '\r')
+        eol++;
+    *eol = '\0';
+
+    /* Skip leading whitespace */
+    while (*line == ' ' || *line == '\t')
+        line++;
+
+    if (*line == '\0')
+        return -1;
+
+    /* Extract interpreter path */
+    char *end = line;
+    while (*end && *end != ' ' && *end != '\t')
+        end++;
+
+    size_t plen = (size_t)(end - line);
+    if (plen >= path_size)
+        plen = path_size - 1;
+    memcpy(interp_path, line, plen);
+    interp_path[plen] = '\0';
+
+    /* Extract optional argument */
+    interp_arg[0] = '\0';
+    if (*end) {
+        char *arg = end;
+        while (*arg == ' ' || *arg == '\t')
+            arg++;
+        if (*arg) {
+            size_t alen = strlen(arg);
+            if (alen >= arg_size)
+                alen = arg_size - 1;
+            memcpy(interp_arg, arg, alen);
+            interp_arg[alen] = '\0';
+        }
+    }
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main loader entry point                                            */
 /* ------------------------------------------------------------------ */
 
@@ -264,6 +327,48 @@ int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv) {
         printf("elf: cannot read inode %u\r\n", ino);
         return -1;
     }
+    if (inode.i_size < 4) {
+        printf("elf: file too small\r\n");
+        return -1;
+    }
+
+    /* Check for shebang script (#!) — resolve iteratively */
+    char *exec_argv[66];
+    int exec_argc = user_argc;
+    char **exec_argv_ptr = user_argv;
+    char interp_path[256];
+    char interp_arg[256];
+    if (parse_shebang(ino, interp_path, sizeof(interp_path),
+                      interp_arg, sizeof(interp_arg)) == 0) {
+        /* It's a script — resolve the interpreter */
+        uint32_t interp_ino = fs_resolve_path(interp_path);
+        if (interp_ino == 0) {
+            printf("elf: interpreter '%s' not found\r\n", interp_path);
+            return -1;
+        }
+        /* Build new argv: [interpreter, interp_arg?, script_path, original_args...] */
+        int new_argc = 0;
+        exec_argv[new_argc++] = interp_path;
+        if (interp_arg[0])
+            exec_argv[new_argc++] = interp_arg;
+        /* Add the script path (argv[0] from original invocation) */
+        if (user_argc > 0)
+            exec_argv[new_argc++] = user_argv[0];
+        /* Add remaining original arguments */
+        for (int i = 1; i < user_argc && new_argc < 65; i++)
+            exec_argv[new_argc++] = user_argv[i];
+        exec_argv[new_argc] = NULL;
+        /* Switch to the interpreter */
+        ino = interp_ino;
+        exec_argc = new_argc;
+        exec_argv_ptr = exec_argv;
+        /* Re-read the interpreter inode */
+        if (ext2_read_inode(ino, &inode) != 0) {
+            printf("elf: cannot read interpreter inode\r\n");
+            return -1;
+        }
+    }
+
     if (inode.i_size < sizeof(Elf32_Ehdr)) {
         printf("elf: file too small\r\n");
         return -1;
@@ -387,16 +492,16 @@ int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv) {
     uint32_t sp = USER_STACK_TOP;
 
     uint32_t str_addrs[10];
-    int nargs = user_argc;
+    int nargs = exec_argc;
     if (nargs > 10) nargs = 10;
 
     for (int i = nargs - 1; i >= 0; i--) {
-        size_t len = strlen(user_argv[i]) + 1;
+        size_t len = strlen(exec_argv_ptr[i]) + 1;
         sp -= len;
         uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
         uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
         if (phys == 0) { elf_free_page_slot(slot); paging_free_user_directory(new_pd); return -1; }
-        memcpy((void *)(phys + (sp & (PAGE_SIZE - 1))), user_argv[i], len);
+        memcpy((void *)(phys + (sp & (PAGE_SIZE - 1))), exec_argv_ptr[i], len);
         str_addrs[i] = sp;
     }
 
@@ -514,9 +619,56 @@ int elf_exec_replace(uint32_t ino, int argc, char **argv, int envc, char **envp)
     if (!current)
         return -1;
 
+    /* Resolve shebang scripts iteratively (avoids recursive call that
+     * would double the ~6KB stack frame and overflow the 16KB kernel stack). */
+    char shebang_buf[4096];
+    char *shebang_argv[66];
+    int shebang_argc = 0;
+
+    {
+        char interp_path[256];
+        char interp_arg[256];
+        if (parse_shebang(ino, interp_path, sizeof(interp_path),
+                          interp_arg, sizeof(interp_arg)) == 0) {
+            /* It's a script — resolve the interpreter */
+            uint32_t interp_ino = fs_resolve_path(interp_path);
+            if (interp_ino == 0)
+                return -1;
+            /* Build new argv: [interpreter, interp_arg?, script_path, original_args...] */
+            int off = 0;
+            /* Copy interpreter path */
+            size_t plen = strlen(interp_path) + 1;
+            memcpy(shebang_buf + off, interp_path, plen);
+            shebang_argv[shebang_argc++] = shebang_buf + off;
+            off += (int)plen;
+            /* Copy optional interpreter argument */
+            if (interp_arg[0]) {
+                size_t alen = strlen(interp_arg) + 1;
+                memcpy(shebang_buf + off, interp_arg, alen);
+                shebang_argv[shebang_argc++] = shebang_buf + off;
+                off += (int)alen;
+            }
+            /* Copy original argv (script path + args) */
+            for (int i = 0; i < argc && shebang_argc < 65; i++) {
+                size_t l = strlen(argv[i]) + 1;
+                if (off + (int)l > (int)sizeof(shebang_buf))
+                    break;
+                memcpy(shebang_buf + off, argv[i], l);
+                shebang_argv[shebang_argc++] = shebang_buf + off;
+                off += (int)l;
+            }
+            shebang_argv[shebang_argc] = NULL;
+            /* Switch to the interpreter */
+            ino = interp_ino;
+            argc = shebang_argc;
+            argv = shebang_argv;
+        }
+    }
+
     ext2_inode_t inode;
     if (ext2_read_inode(ino, &inode) != 0)
         return -1;
+
     if (inode.i_size < sizeof(Elf32_Ehdr))
         return -1;
 

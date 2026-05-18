@@ -26,43 +26,54 @@ ext2 filesystem ready
 MOSS login: root
 Password: 
 Welcome, root!
-root@/>root@/>ls
-a.out  bin  blah  boot	dev  doom1.wad	etc  home  id1	lib  lost+found  media	mnt  opt  proc	root  sbin  srv  test.c  test_fork  tmp  usr
-root@/>root@/>ls -al
+root@/>nbash
+I have no name!@moss:/$ neofeth ch
+neofetch
+[32m    .    .   .         .  .[0m        [1m[32mroot[0m@[1m[32mmoss[0m
+[32m          .  . ...  .   .     .[0m    ---------
+[32m          .   ..-*#+:.  .    .  .....[0m  [1m[32mOS[0m: MOSS 0.1.0
+[32m .  .  .   .:=*#######*-. . .      .[0m  [1m[32mHost[0m: MOSS Virtual Machine
+[32m ..  .   :+#######*#######=.  .[0m    [1m[32mKernel[0m: MOSS 0.1.0 i686
+[32m     .:*#######***=***#######=.  .....[0m  [1m[32mUptime[0m: unknown
+[32m   ..:*#####*****+++*****#####+ .  ..[0m  [1m[32mShell[0m: bash
+[32m.  ..:*###==**+======++**-+###+     ..[0m  [1m[32mTerminal[0m: MOSS Console
+[32m  . .:*###***===+##*+==+**####+     .[0m  [1m[32mCPU[0m: i686
+[32m     :*###***==+#=:**==+**####+     .[0m  [1m[32mMemory[0m: ?
+[32m     :*###***===*###+==+**####+[0m
+[32m..   :*###++*+========+**=*###+.. ....[0m  [40m   [41m   [42m   [43m   [44m   [45m   [46m   [47m   [0m
+[32m     :*####*****++=+******####+  . ..[0m
+[32m.. ...=#######********#######*: ...[0m
+[32m  . .   .=#######*+*######*:.        .[0m
+[32m. .. .     .-*#########+: .  . ..  .[0m
+[32m . . .. .    ..:+###=:.  .  .       ..[0m
+[32m .      .      . .       .   .   .   .[0m
+[32m          ...   ..     ..  .        .[0m
+
+I have no name!@moss:/$ ls -al
+ls -al
 total 4260
-drwxr-xr-x 20 root root    1024 May 18  2026 .
-drwxr-xr-x 20 root root    1024 May 18  2026 ..
--rwxrwxrwx  1 root root   26963 Jan  1 00:00 a.out
-drwxrwxrwx  2 root root    1024 May 18  2026 bin
-drwxrwxrwx  3 root root    1024 Jan  1 00:00 blah
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 boot
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 dev
+drwxr-xr-x 20 root root    1024 May 18  2026 [0m[01;34m.[0m
+drwxr-xr-x 20 root root    1024 May 18  2026 [01;34m..[0m
+-rwxrwxrwx  1 root root   26963 Jan  1 00:00 [01;32ma.out[0m
+drwxrwxrwx  2 root root    1024 May 18  2026 [34;42mbin[0m
+drwxrwxrwx  3 root root    1024 Jan  1 00:00 [34;42mblah[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mboot[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mdev[0m
 -rw-r--r--  1 root root 4196020 May 18  2026 doom1.wad
-drwxrwxrwx  2 root root    1024 May 17  2026 etc
-drwxrwxrwx  3 root root    1024 Jan  1 00:00 home
-drwxr-xr-x  2 root root    1024 May 18  2026 id1
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 lib
-drwx------  2 root root   12288 Mar 28  2026 lost+found
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 media
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 mnt
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 opt
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 proc
-drwxr-xr-x  2 root root    1024 May 16  2026 root
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 sbin
-drwxrwxrwx  2 root root    1024 Jan  1 00:00 srv
--rwxrwxrwx  1 root root     201 Jan  1 00:00 test.c
--rwxr-xr-x  1 root root   86168 Apr 19  2026 test_fork
-drwxrwxrwt  2 root root    1024 Jan  1 00:00 tmp
-drwxrwxrwx  4 root root    1024 Apr 29  2026 usr
-root@/>root@/>ls
-a.out  bin  blah  boot	dev  doom1.wad	etc  home  id1	lib  lost+found  media	mnt  opt  proc	root  sbin  srv  test.c  test_fork  tmp  usr
-root@/>root@/>hefetch
-Kernel version Beta 2.0
-GNU General Public License v3.0
-C. Miro Haapalainen, 2026
-ext2 filesystem, CWD inode 2
-root@/>
-root@/>
-root@/>
-root@/>
-root@/>root@/>
+drwxrwxrwx  2 root root    1024 May 17  2026 [34;42metc[0m
+drwxrwxrwx  3 root root    1024 Jan  1 00:00 [34;42mhome[0m
+drwxr-xr-x  2 root root    1024 May 18  2026 [01;34mid1[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mlib[0m
+drwx------  2 root root   12288 Mar 28  2026 [01;34mlost+found[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mmedia[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mmnt[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mopt[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mproc[0m
+drwxr-xr-x  2 root root    1024 May 16  2026 [01;34mroot[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42msbin[0m
+drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42msrv[0m
+-rwxrwxrwx  1 root root     201 Jan  1 00:00 [01;32mtest.c[0m
+-rwxr-xr-x  1 root root   86168 Apr 19  2026 [01;32mtest_fork[0m
+drwxrwxrwt  2 root root    1024 Jan  1 00:00 [30;42mtmp[0m
+drwxrwxrwx  4 root root    1024 Apr 29  2026 [34;42musr[0m
+I have no name!@moss:/$ 
