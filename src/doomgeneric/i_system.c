@@ -96,6 +96,7 @@ static byte *AutoAllocMemory(int *size, int default_ram, int min_ram)
 {
     byte *zonemem;
 
+
     // Allocate the zone memory.  This loop tries progressively smaller
     // zone sizes until a size is found that can be allocated.
     // If we used the -mb command line parameter, only the parameter

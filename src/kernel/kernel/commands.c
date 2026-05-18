@@ -10,6 +10,7 @@
 #include <kernel/sched.h>
 #include <kernel/ext2.h>
 #include <kernel/elf.h>
+#include <kernel/users.h>
 #include <sys/multiboot.h>
 
 extern uint32_t cwd_ino;
@@ -291,4 +292,169 @@ void exec_cmd(void) {
 	if (rc != 0) {
 		printf("exec: failed to execute '%s'\r\n", argv[1]);
 	}
+}
+
+/* ------------------------------------------------------------------ */
+/*  User management commands                                           */
+/* ------------------------------------------------------------------ */
+
+void whoami_cmd(void) {
+	printf("%s\r\n", user_current_name());
+}
+
+void useradd_cmd(void) {
+	task_t *t = get_current_task();
+	if (!t || t->euid != UID_ROOT) {
+		printf("useradd: permission denied (must be root)\r\n");
+		return;
+	}
+	if (argc < 3) {
+		printf("Usage: useradd <username> <password>\r\n");
+		return;
+	}
+	/* Auto-assign next uid */
+	uint16_t new_uid = 1;
+	for (int i = 0; i < user_count(); i++) {
+		user_entry_t *u = user_get_by_index(i);
+		if (u && u->uid >= new_uid)
+			new_uid = u->uid + 1;
+	}
+
+	char home[64];
+	memset(home, 0, sizeof(home));
+	memcpy(home, "/home/", 6);
+	int ulen = strlen(argv[1]);
+	if (ulen > 56) ulen = 56;
+	memcpy(home + 6, argv[1], ulen);
+
+	if (user_add(argv[1], argv[2], new_uid, new_uid, home) == 0) {
+		printf("User '%s' created (uid=%u)\r\n", argv[1], new_uid);
+	} else {
+		printf("useradd: failed to create user\r\n");
+	}
+}
+
+void userdel_cmd(void) {
+	task_t *t = get_current_task();
+	if (!t || t->euid != UID_ROOT) {
+		printf("userdel: permission denied (must be root)\r\n");
+		return;
+	}
+	if (argc < 2) {
+		printf("Usage: userdel <username>\r\n");
+		return;
+	}
+	if (user_remove(argv[1]) == 0) {
+		printf("User '%s' removed\r\n", argv[1]);
+	} else {
+		printf("userdel: failed to remove user (not found or is root)\r\n");
+	}
+}
+
+void passwd_cmd(void) {
+	task_t *t = get_current_task();
+	if (!t) return;
+
+	const char *target = user_current_name();
+	if (argc >= 2 && t->euid == UID_ROOT)
+		target = argv[1];
+
+	char old_pass[MAX_PASSWORD];
+	char new_pass[MAX_PASSWORD];
+	uint8_t ch;
+	int pos;
+
+	/* Non-root users must provide old password */
+	if (t->euid != UID_ROOT) {
+		printf("Current password: ");
+		memset(old_pass, 0, sizeof(old_pass));
+		pos = 0;
+		while (1) {
+			ch = get_key();
+			if (ch == 0x0D) { printf("\r\n"); break; }
+			if (ch == 0x08 && pos > 0) { old_pass[--pos] = '\0'; continue; }
+			if (pos < MAX_PASSWORD - 1 && ch >= 0x20 && ch <= 0x7E)
+				old_pass[pos++] = ch;
+		}
+	} else {
+		old_pass[0] = '\0';
+	}
+
+	printf("New password: ");
+	memset(new_pass, 0, sizeof(new_pass));
+	pos = 0;
+	while (1) {
+		ch = get_key();
+		if (ch == 0x0D) { printf("\r\n"); break; }
+		if (ch == 0x08 && pos > 0) { new_pass[--pos] = '\0'; continue; }
+		if (pos < MAX_PASSWORD - 1 && ch >= 0x20 && ch <= 0x7E)
+			new_pass[pos++] = ch;
+	}
+
+	if (user_change_password(target, old_pass, new_pass) == 0) {
+		printf("Password changed successfully\r\n");
+	} else {
+		printf("passwd: authentication failure or user not found\r\n");
+	}
+}
+
+void users_cmd(void) {
+	printf("UID  GID  USERNAME\r\n");
+	for (int i = 0; i < user_count(); i++) {
+		user_entry_t *u = user_get_by_index(i);
+		if (u) {
+			printf("%-4u %-4u %s\r\n", u->uid, u->gid, u->username);
+		}
+	}
+}
+
+void id_cmd(void) {
+	task_t *t = get_current_task();
+	if (!t) return;
+	printf("uid=%u(%s) gid=%u euid=%u egid=%u\r\n",
+	       t->uid, user_current_name(), t->gid, t->euid, t->egid);
+}
+
+void su_cmd(void) {
+	if (argc < 2) {
+		printf("Usage: su <username>\r\n");
+		return;
+	}
+
+	char pass_buf[MAX_PASSWORD];
+	uint8_t ch;
+	int pos;
+
+	/* Root doesn't need password */
+	task_t *t = get_current_task();
+	if (t && t->euid != UID_ROOT) {
+		printf("Password: ");
+		memset(pass_buf, 0, sizeof(pass_buf));
+		pos = 0;
+		while (1) {
+			ch = get_key();
+			if (ch == 0x0D) { printf("\r\n"); break; }
+			if (ch == 0x08 && pos > 0) { pass_buf[--pos] = '\0'; continue; }
+			if (pos < MAX_PASSWORD - 1 && ch >= 0x20 && ch <= 0x7E)
+				pass_buf[pos++] = ch;
+		}
+		if (!user_authenticate(argv[1], pass_buf)) {
+			printf("su: authentication failure\r\n");
+			return;
+		}
+	}
+
+	user_entry_t *u = user_lookup(argv[1]);
+	if (!u) {
+		printf("su: user '%s' not found\r\n", argv[1]);
+		return;
+	}
+
+	if (t) {
+		t->uid  = u->uid;
+		t->gid  = u->gid;
+		t->euid = u->uid;
+		t->egid = u->gid;
+	}
+	printf("Switched to %s\r\n", u->username);
 }

@@ -1,7 +1,8 @@
-/* <signal.h> — MOSS user libc stub.
- * MOSS has no signal delivery, but TCC references these symbols. */
+/* <signal.h> — MOSS user libc signal support. */
 #ifndef _SIGNAL_H
 #define _SIGNAL_H
+
+#include <syscall.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -39,14 +40,25 @@ typedef unsigned int sigset_t;
 
 #define _NSIG    32
 
+/* SIG_BLOCK / SIG_UNBLOCK / SIG_SETMASK for sigprocmask */
+#define SIG_BLOCK   0
+#define SIG_UNBLOCK 1
+#define SIG_SETMASK 2
+
 static inline sighandler_t signal(int sig, sighandler_t handler) {
-    (void)sig; (void)handler;
-    return SIG_DFL;
+    return (sighandler_t)(uintptr_t)_syscall2(SYS_SIGNAL, (uint32_t)sig, (uint32_t)(uintptr_t)handler);
+}
+
+static inline int kill(int pid, int sig) {
+    return (int)_syscall2(SYS_KILL, (uint32_t)pid, (uint32_t)sig);
 }
 
 static inline int raise(int sig) {
-    (void)sig;
-    return 0;
+    return kill((int)_syscall0(SYS_GETPID), sig);
+}
+
+static inline int sigprocmask(int how, const sigset_t *set, sigset_t *oldset) {
+    return (int)_syscall3(SYS_SIGPROCMASK, (uint32_t)how, (uint32_t)(uintptr_t)set, (uint32_t)(uintptr_t)oldset);
 }
 
 #ifdef __cplusplus

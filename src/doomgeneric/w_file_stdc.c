@@ -42,13 +42,34 @@ static wad_file_t *W_StdC_OpenFile(char *path)
         return NULL;
     }
 
-    // Create a new stdc_wad_file_t to hold the file handle.
-
     result = Z_Malloc(sizeof(stdc_wad_file_t), PU_STATIC, 0);
     result->wad.file_class = &stdc_wad_file;
-    result->wad.mapped = NULL;
     result->wad.length = M_FileLength(fstream);
     result->fstream = fstream;
+
+    /* Preload the entire file into memory so all subsequent reads
+     * are simple memcpy instead of ATA PIO disk I/O.
+     * Use Z_Malloc (Doom's zone allocator) to avoid exhausting the
+     * heap — with mapped WAD, individual lump caches are skipped. */
+    byte *buf = Z_Malloc(result->wad.length, PU_STATIC, NULL);
+    if (buf != NULL)
+    {
+        fseek(fstream, 0, SEEK_SET);
+        size_t got = fread(buf, 1, result->wad.length, fstream);
+        if (got == result->wad.length)
+        {
+            result->wad.mapped = buf;
+        }
+        else
+        {
+            Z_Free(buf);
+            result->wad.mapped = NULL;
+        }
+    }
+    else
+    {
+        result->wad.mapped = NULL;
+    }
 
     return &result->wad;
 }

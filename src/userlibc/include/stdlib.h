@@ -35,13 +35,22 @@ int  abs(int x);
 long labs(long x);
 
 char *getenv(const char *name);
+int   setenv(const char *name, const char *value, int overwrite);
+int   unsetenv(const char *name);
+int   putenv(char *string);
 int   system(const char *command);
 char *realpath(const char *path, char *resolved);
+
+extern char **environ;
 
 void qsort(void *base, size_t nmemb, size_t size,
             int (*compar)(const void *, const void *));
 
 int atexit(void (*func)(void));
+
+#define RAND_MAX 2147483647
+int   rand(void);
+void  srand(unsigned int seed);
 
 #ifdef __cplusplus
 }

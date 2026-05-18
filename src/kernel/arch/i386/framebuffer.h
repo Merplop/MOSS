@@ -22,6 +22,9 @@ void fb_clear(uint32_t color);
 uint32_t fb_make_color(uint8_t r, uint8_t g, uint8_t b);
 void fb_draw_char(unsigned char c, uint32_t x, uint32_t y, uint32_t fg, uint32_t bg);
 void fb_scroll(uint32_t rows_pixels);
+void fb_flush(void);
+void fb_flush_full(void);
 framebuffer_info_t *fb_get_info(void);
+uint8_t *fb_get_shadow(void);
 
 #endif

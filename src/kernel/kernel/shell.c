@@ -8,6 +8,8 @@
 #include <kernel/keyboard.h>
 #include <kernel/kernel.h>
 #include <kernel/ext2.h>
+#include <kernel/elf.h>
+#include <kernel/users.h>
 #include <moss/commands.h>
 
 extern uint32_t cwd_ino;
@@ -27,6 +29,7 @@ extern void rmdir_cmd(void);
 extern void disks_cmd(void);
 extern void mkfs_cmd(void);
 extern void mount_cmd(void);
+extern uint32_t fs_find_file(const char *name);
 
 /* Defined in commands.c */
 extern void shutdown_cmd(void);
@@ -47,12 +50,31 @@ extern void exec_cmd(void);
 extern void music_player(void);
 extern void nosound(void);
 
-char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "ls", "reb", "hlt", "shutdown",
+/* Defined in net.c */
+extern void ping_cmd(void);
+extern void resolve_cmd(void);
+
+/* Defined in tcp.c */
+extern void wget_cmd(void);
+
+/* Defined in browse.c */
+extern void browse_cmd(void);
+
+/* Defined in commands.c (user management) */
+extern void whoami_cmd(void);
+extern void useradd_cmd(void);
+extern void userdel_cmd(void);
+extern void passwd_cmd(void);
+extern void users_cmd(void);
+extern void id_cmd(void);
+extern void su_cmd(void);
+
+char* commands[NUM_COMMANDS] = {"sound", "stopsound", "tex", "cat", "reb", "hlt", "shutdown",
 "colour", "sleep", "help", "clear", "fetch", "ps", "touch", "mkdir", "cd", "mv", "rm", "cmp", "priv", "mmap", "exec",
-"disks", "mkfs", "mount"};
-void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, ls_cmd, reb_cmd, hlt_cmd, shutdown_cmd,
+"disks", "mkfs", "mount", "ping", "resolve", "wget", "browse", "whoami", "useradd", "userdel", "passwd", "users", "id", "su"};
+void (*command_ptrs[NUM_COMMANDS])() = {music_player, nosound, text_editor, cat_cmd, reb_cmd, hlt_cmd, shutdown_cmd,
 colour_cmd, sleep_cmd, help_cmd, clear_cmd, fetch_cmd, ps_cmd, touch_cmd, mkdir_cmd, cd_cmd, mv_cmd, rm_cmd, run_file, priv_cmd, mmap_cmd, exec_cmd,
-disks_cmd, mkfs_cmd, mount_cmd};
+disks_cmd, mkfs_cmd, mount_cmd, ping_cmd, resolve_cmd, wget_cmd, browse_cmd, whoami_cmd, useradd_cmd, userdel_cmd, passwd_cmd, users_cmd, id_cmd, su_cmd};
 
 void language_prompt(void) {
 	printf(language_spacer_top);
@@ -92,6 +114,7 @@ void language_prompt(void) {
 
 void start_shell(void) {
 	enable_cursor(0, 15);
+	login_prompt();
 	while(1) {
 		memset(cmd_str, 0, sizeof(cmd_str));
 		input_length = 0;
@@ -99,12 +122,12 @@ void start_shell(void) {
 		argc = 0;
 		if (custom_colour_scheme == 0) {
 			change_colour_current(3, 0);
-			printf("%s", cwd_path);
+			printf("%s@%s", user_current_name(), cwd_path);
 			change_colour_current(15, 0);
 			printf(prompt);
 			change_colour_current(7, 0); 
 		} else {
-			printf("%s", cwd_path);
+			printf("%s@%s", user_current_name(), cwd_path);
 			printf(prompt);
 		}
 		while(1) {
@@ -152,8 +175,32 @@ void start_shell(void) {
 				break;
 			}
 		}
-		if (command_found == 0) {
-			printf(CMD_ERROR);
+		if (command_found == 0 && arg_token != NULL) {
+			/* Try to find and execute an ELF binary in /bin/ */
+			char bin_path[270];
+			memset(bin_path, 0, sizeof(bin_path));
+			strcpy(bin_path, "/bin/");
+			strncat(bin_path, arg_token, sizeof(bin_path) - 6);
+
+			/* Parse remaining arguments */
+			while (arg_token != NULL) {
+				if (argc == MAX_ARGS) {
+					printf(ARG_COUNT_ERROR);
+					arg_error_caught = 1;
+					break;
+				}
+				argv[argc++] = arg_token;
+				arg_token = strtok(NULL, " ");
+			}
+
+			if (!arg_error_caught) {
+				uint32_t file_ino = fs_find_file(bin_path);
+				if (file_ino != 0) {
+					elf_load_and_exec(file_ino, argc, argv);
+				} else {
+					printf(CMD_ERROR);
+				}
+			}
 		}
 	}
 }

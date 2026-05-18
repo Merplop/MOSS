@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <syscall.h>
+#include <errno.h>
 
 /* ------------------------------------------------------------------ */
 /*  malloc / free / calloc / realloc                                   */
@@ -71,8 +73,10 @@ void *malloc(size_t size) {
 
     /* No free block found — grow the heap */
     block_header_t *new_blk = extend_heap(size);
-    if (!new_blk)
+    if (!new_blk) {
+        errno = ENOMEM;
         return NULL;
+    }
 
     /* If the new block is bigger than needed, add remainder to free list */
     if (new_blk->size > size + HEADER_SIZE + 16) {
@@ -93,9 +97,39 @@ void free(void *ptr) {
 
     block_header_t *blk = (block_header_t *)((char *)ptr - HEADER_SIZE);
 
-    /* Insert at head of free list (simple, no coalescing) */
-    blk->next = free_list;
-    free_list = blk;
+    /* Insert into free list sorted by address for coalescing */
+    block_header_t *prev = NULL;
+    block_header_t *cur = free_list;
+
+    while (cur && cur < blk) {
+        prev = cur;
+        cur = cur->next;
+    }
+
+    /* Insert blk between prev and cur */
+    blk->next = cur;
+    if (prev)
+        prev->next = blk;
+    else
+        free_list = blk;
+
+    /* Coalesce blk with next block if adjacent */
+    if (blk->next) {
+        char *blk_end = (char *)blk + HEADER_SIZE + blk->size;
+        if (blk_end == (char *)blk->next) {
+            blk->size += HEADER_SIZE + blk->next->size;
+            blk->next = blk->next->next;
+        }
+    }
+
+    /* Coalesce prev with blk if adjacent */
+    if (prev) {
+        char *prev_end = (char *)prev + HEADER_SIZE + prev->size;
+        if (prev_end == (char *)blk) {
+            prev->size += HEADER_SIZE + blk->size;
+            prev->next = blk->next;
+        }
+    }
 }
 
 void *calloc(size_t nmemb, size_t size) {
@@ -119,8 +153,10 @@ void *realloc(void *ptr, size_t size) {
         return ptr;  /* existing block is big enough */
 
     void *new_ptr = malloc(size);
-    if (!new_ptr)
+    if (!new_ptr) {
+        errno = ENOMEM;
         return NULL;
+    }
     memcpy(new_ptr, ptr, blk->size);
     free(ptr);
     return new_ptr;
@@ -336,12 +372,48 @@ long strtol(const char *nptr, char **endptr, int base) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  getenv — stub (no environment in MOSS)                             */
+/*  getenv / setenv / unsetenv / putenv                                */
 /* ------------------------------------------------------------------ */
 
 char *getenv(const char *name) {
-    (void)name;
-    return (char *)0;
+    if (!name) return (char *)0;
+    static char env_val_buf[512];
+    int32_t ret = _syscall3(SYS_GETENV, (uint32_t)name,
+                            (uint32_t)env_val_buf, sizeof(env_val_buf));
+    if (ret < 0)
+        return (char *)0;
+    return env_val_buf;
+}
+
+int setenv(const char *name, const char *value, int overwrite) {
+    if (!name || !value) return -1;
+    /* Check if it exists already */
+    if (!overwrite) {
+        static char tmp[4];
+        if (_syscall3(SYS_GETENV, (uint32_t)name, (uint32_t)tmp, sizeof(tmp)) >= 0)
+            return 0;  /* already set, don't overwrite */
+    }
+    /* Build "KEY=VALUE" string on stack */
+    size_t nlen = strlen(name);
+    size_t vlen = strlen(value);
+    char kv[512];
+    if (nlen + 1 + vlen + 1 > sizeof(kv))
+        return -1;
+    memcpy(kv, name, nlen);
+    kv[nlen] = '=';
+    memcpy(kv + nlen + 1, value, vlen + 1);
+    return (int)_syscall1(SYS_SETENV, (uint32_t)kv);
+}
+
+int unsetenv(const char *name) {
+    /* Set to empty string — simplified */
+    if (!name) return -1;
+    return setenv(name, "", 1);
+}
+
+int putenv(char *string) {
+    if (!string) return -1;
+    return (int)_syscall1(SYS_SETENV, (uint32_t)string);
 }
 
 /* ------------------------------------------------------------------ */
@@ -477,4 +549,19 @@ char *realpath(const char *path, char *resolved) {
         buf[clen + plen] = '\0';
     }
     return buf;
+}
+
+/* ------------------------------------------------------------------ */
+/*  rand / srand — simple LCG PRNG                                     */
+/* ------------------------------------------------------------------ */
+
+static unsigned int _rand_seed = 1;
+
+void srand(unsigned int seed) {
+    _rand_seed = seed;
+}
+
+int rand(void) {
+    _rand_seed = _rand_seed * 1103515245u + 12345u;
+    return (int)((_rand_seed >> 16) & 0x7FFFFFFF);
 }

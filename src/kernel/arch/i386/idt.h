@@ -27,6 +27,7 @@ struct idt_ptr {
 
 /* Saved CPU registers pushed by the ISR stub. */
 struct isr_regs {
+    uint32_t gs;                                          /* pushed by stub */
     uint32_t ds;
     uint32_t edi, esi, ebp, esp, ebx, edx, ecx, eax;  /* pusha */
     uint32_t int_no, err_code;

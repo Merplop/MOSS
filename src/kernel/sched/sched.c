@@ -63,15 +63,23 @@ task_t task_create(void (*entry)(void), long priority) {
     t.state    = TASK_READY;
     t.counter  = (priority > 0) ? priority : DEFAULT_QUANTUM;
     t.priority = (priority > 0) ? priority : DEFAULT_PRIORITY;
-    t.signal   = 0;
     t.exit_code = 0;
     t.entry    = entry;
     t.brk_start   = 0;
     t.brk_current = 0;
 
+    /* Signal handling defaults */
+    t.sig_pending = 0;
+    t.sig_blocked = 0;
+    t.in_signal   = 0;
+    for (int i = 0; i < _NSIG; i++)
+        t.sig_handlers[i] = SIG_DFL;
+
     /* Per-process paging defaults */
     t.page_dir = NULL;           /* NULL = use kernel_page_dir */
     t.user_pages_slot = -1;      /* no user pages by default */
+    t.user_entry_eip = 0;
+    t.user_entry_esp = 0;
     t.parent_pid = 0;
 
     /* Fork child state (zeroed) */
@@ -81,6 +89,25 @@ task_t task_create(void (*entry)(void), long priority) {
     t.fork_ebx = t.fork_ecx = t.fork_edx = 0;
     t.fork_esi = t.fork_edi = t.fork_ebp = 0;
     t.fork_ds = 0;
+    t.fork_gs = 0;
+
+    /* TLS defaults (no TLS) */
+    t.tls_gs    = 0;
+    t.tls_entry = 0;
+    t.tls_base  = 0;
+    t.tls_limit = 0;
+
+    /* User/group identity — default to root */
+    t.uid  = 0;
+    t.gid  = 0;
+    t.euid = 0;
+    t.egid = 0;
+
+    /* Per-process cwd: initialize from global cwd */
+    extern uint32_t cwd_ino;
+    extern char cwd_path[256];
+    t.cwd_ino = cwd_ino;
+    memcpy(t.cwd_path, cwd_path, 256);
 
     /* Initialize file descriptor table */
     memset(t.fd_table, 0, sizeof(t.fd_table));
@@ -215,6 +242,15 @@ void schedule(void) {
 
             /* Perform actual CPU context switch */
             if (prev_node != NULL && prev_node != current_node) {
+                /* Save current task's cwd into its task struct,
+                 * and restore new task's cwd into globals. */
+                extern uint32_t cwd_ino;
+                extern char cwd_path[256];
+                prev_node->t.cwd_ino = cwd_ino;
+                memcpy(prev_node->t.cwd_path, cwd_path, 256);
+                cwd_ino = current_node->t.cwd_ino;
+                memcpy(cwd_path, current_node->t.cwd_path, 256);
+
                 /* Point TSS.esp0 at the top of the new task's kernel stack
                  * so interrupts from ring 3 land on the right stack. */
                 if (current_node->t.stack != NULL)
@@ -226,6 +262,15 @@ void schedule(void) {
                 if (!new_pd)
                     new_pd = paging_get_page_dir();
                 paging_switch_directory(new_pd);
+
+                /* Restore new task's TLS GDT entry so %gs works */
+                if (current_node->t.tls_gs) {
+                    extern int gdt_set_tls(int entry_number,
+                                           uint32_t base, uint32_t limit);
+                    gdt_set_tls(current_node->t.tls_entry,
+                                current_node->t.tls_base,
+                                current_node->t.tls_limit);
+                }
 
                 switch_context(&prev_node->t.esp, current_node->t.esp);
             }
@@ -248,6 +293,17 @@ void schedule(void) {
 void timer_tick(void) {
     if (current_node == NULL)
         return;
+
+    /* Wake all TASK_INTERRUPTIBLE tasks on each tick so they can
+     * re-check their wait conditions (pipe data, sleep timeout, etc.) */
+    sched_list_t *node = sched_list_head;
+    if (node) {
+        do {
+            if (node->t.state == TASK_INTERRUPTIBLE)
+                node->t.state = TASK_READY;
+            node = node->next;
+        } while (node != sched_list_head);
+    }
 
     if (current_node->t.counter > 0)
         current_node->t.counter--;
@@ -296,5 +352,58 @@ task_t *find_task_by_pid(uint32_t pid) {
     return NULL;
 }
 
+/* Find any child of parent_pid. If want_zombie is set, prefer zombie children.
+ * Returns task pointer, or NULL if no matching child exists.
+ * Sets *found_any=1 if any child (zombie or not) was found. */
+task_t *find_child_task(uint32_t parent_pid, int want_zombie, int *found_any) {
+    if (sched_list_head == NULL)
+        return NULL;
 
+    task_t *any_child = NULL;
+    sched_list_t *node = sched_list_head;
+    do {
+        if (node->t.parent_pid == parent_pid) {
+            if (found_any) *found_any = 1;
+            if (want_zombie && node->t.state == TASK_ZOMBIE)
+                return &node->t;
+            if (!any_child)
+                any_child = &node->t;
+        }
+        node = node->next;
+    } while (node != sched_list_head);
 
+    return want_zombie ? NULL : any_child;
+}
+
+/* Send a signal to a task. Returns 0 on success, -1 on error. */
+int task_send_signal(task_t *task, int sig) {
+    if (!task || sig < 1 || sig >= _NSIG)
+        return -1;
+
+    /* SIGKILL and SIGSTOP cannot be caught or ignored */
+    if (sig == SIGKILL) {
+        task->sig_pending |= (1u << sig);
+        /* Force-kill: if blocked or interruptible, wake it */
+        if (task->state == TASK_BLOCKED || task->state == TASK_INTERRUPTIBLE)
+            task->state = TASK_READY;
+        return 0;
+    }
+
+    /* Check if signal is ignored */
+    sighandler_t handler = task->sig_handlers[sig];
+    if (handler == SIG_IGN)
+        return 0;  /* silently discard */
+
+    /* Set the pending bit */
+    task->sig_pending |= (1u << sig);
+
+    /* Wake task if it's in an interruptible sleep */
+    if (task->state == TASK_INTERRUPTIBLE)
+        task->state = TASK_READY;
+
+    /* SIGCONT unblocks stopped tasks */
+    if (sig == SIGCONT && task->state == TASK_STOPPED)
+        task->state = TASK_READY;
+
+    return 0;
+}

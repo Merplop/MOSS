@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <kernel/kernel.h>
+#include <kernel/sched.h>
+#include <kernel/elf.h>
 #include "idt.h"
 #include "pic.h"
 
@@ -64,7 +66,26 @@ void isr_handler(struct isr_regs *regs) {
         printf(" err=");
         /* hex print of error code */
         print_hex(regs->err_code);
+        printf(" EIP=");
+        print_hex(regs->eip);
+        printf(" CS=");
+        print_hex(regs->cs);
         printf("\r\n");
+
+        /* If the fault was in user mode (CS RPL=3), kill the task
+         * instead of panicking the whole system. */
+        if ((regs->cs & 3) == 3) {
+            task_t *t = get_current_task();
+            if (t) {
+                printf("  Killing task PID %u\r\n", (unsigned)t->pid);
+                elf_cleanup_process(t);
+                task_t *parent = find_task_by_pid(t->parent_pid);
+                if (parent && parent->state == TASK_BLOCKED)
+                    unblock_task(parent);
+                exit_task(128 + (int)regs->int_no);
+            }
+        }
+
         panic();
     }
 }

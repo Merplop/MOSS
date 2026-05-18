@@ -161,6 +161,9 @@ int ext2_write_inode(uint32_t ino, const ext2_inode_t *in);
 /* Read file data. Returns bytes read, or -1 on error. */
 int ext2_read_file(uint32_t ino, void *buf, uint32_t offset, uint32_t size);
 
+/* Read file data using a pre-loaded inode (avoids re-reading inode from disk). */
+int ext2_read_file_cached(const ext2_inode_t *inode, void *buf, uint32_t offset, uint32_t size);
+
 /* Write file data. Returns bytes written, or -1 on error.
  * Grows the file and allocates blocks as needed. */
 int ext2_write_file(uint32_t ino, const void *buf, uint32_t offset,

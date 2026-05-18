@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <kernel/ext2.h>
 #include <kernel/blkdev.h>
+#include <kernel/sched.h>
 
 /* ------------------------------------------------------------------ */
 /*  Global filesystem state (single-mount only)                       */
@@ -29,20 +30,133 @@ ext2_fs_t *ext2_get_fs(void)
 /*  Block I/O helpers                                                 */
 /* ------------------------------------------------------------------ */
 
-/* Read one filesystem block into `buf`. */
-static int read_block(uint32_t block, void *buf)
+/* ------------------------------------------------------------------ */
+/*  Block cache (LRU, 64 entries)                                     */
+/* ------------------------------------------------------------------ */
+
+#define BCACHE_SIZE 256
+#define BCACHE_BLOCK_MAX 4096  /* max block size we support caching */
+
+typedef struct {
+    uint32_t block_no;   /* 0 = empty slot */
+    uint32_t lru_tick;   /* access counter for LRU eviction */
+    uint8_t  dirty;
+    uint8_t  data[BCACHE_BLOCK_MAX] __attribute__((aligned(4)));
+} bcache_entry_t;
+
+static bcache_entry_t bcache[BCACHE_SIZE];
+static uint32_t bcache_tick = 0;
+
+static void bcache_invalidate(void) {
+    for (int i = 0; i < BCACHE_SIZE; i++)
+        bcache[i].block_no = 0;
+}
+
+/* Low-level disk read (uncached) */
+static int disk_read_block(uint32_t block, void *buf)
 {
     uint32_t sectors_per_block = fs.block_size / 512;
     uint32_t lba = fs.part_lba + block * sectors_per_block;
     return fs.drive->read_sectors(fs.drive, lba, sectors_per_block, buf);
 }
 
-/* Write one filesystem block from `buf`. */
-static int write_block(uint32_t block, const void *buf)
+/* Low-level disk write (uncached) */
+static int disk_write_block(uint32_t block, const void *buf)
 {
     uint32_t sectors_per_block = fs.block_size / 512;
     uint32_t lba = fs.part_lba + block * sectors_per_block;
     return fs.drive->write_sectors(fs.drive, lba, sectors_per_block, buf);
+}
+
+/* Read one filesystem block into `buf` (cached). */
+/* Ensure a block is in the cache.  Returns pointer to cached data, or NULL. */
+static const uint8_t *read_block_ptr(uint32_t block)
+{
+    if (block == 0) return NULL;
+    bcache_tick++;
+
+    /* Search cache */
+    for (int i = 0; i < BCACHE_SIZE; i++) {
+        if (bcache[i].block_no == block) {
+            bcache[i].lru_tick = bcache_tick;
+            return bcache[i].data;
+        }
+    }
+
+    /* Cache miss — find LRU slot */
+    int lru_idx = 0;
+    uint32_t lru_min = bcache[0].lru_tick;
+    for (int i = 1; i < BCACHE_SIZE; i++) {
+        if (bcache[i].block_no == 0) { lru_idx = i; break; }
+        if (bcache[i].lru_tick < lru_min) {
+            lru_min = bcache[i].lru_tick;
+            lru_idx = i;
+        }
+    }
+
+    /* Evict: write back if dirty */
+    if (bcache[lru_idx].dirty && bcache[lru_idx].block_no != 0) {
+        disk_write_block(bcache[lru_idx].block_no, bcache[lru_idx].data);
+        bcache[lru_idx].dirty = 0;
+    }
+
+    /* Read from disk into cache */
+    if (disk_read_block(block, bcache[lru_idx].data) != 0)
+        return NULL;
+
+    bcache[lru_idx].block_no = block;
+    bcache[lru_idx].lru_tick = bcache_tick;
+    bcache[lru_idx].dirty = 0;
+    return bcache[lru_idx].data;
+}
+
+/* Read one filesystem block into `buf` (cached). */
+static int read_block(uint32_t block, void *buf)
+{
+    const uint8_t *p = read_block_ptr(block);
+    if (!p) return -1;
+    memcpy(buf, p, fs.block_size);
+    return 0;
+}
+
+/* Write one filesystem block from `buf` (write-through + cache update). */
+static int write_block(uint32_t block, const void *buf)
+{
+    if (block == 0) return -1;
+    bcache_tick++;
+
+    /* Write through to disk immediately for data safety */
+    if (disk_write_block(block, buf) != 0)
+        return -1;
+
+    /* Update cache if present, or insert */
+    for (int i = 0; i < BCACHE_SIZE; i++) {
+        if (bcache[i].block_no == block) {
+            memcpy(bcache[i].data, buf, fs.block_size);
+            bcache[i].lru_tick = bcache_tick;
+            bcache[i].dirty = 0;
+            return 0;
+        }
+    }
+
+    /* Not in cache — insert it (find LRU slot) */
+    int lru_idx = 0;
+    uint32_t lru_min = bcache[0].lru_tick;
+    for (int i = 1; i < BCACHE_SIZE; i++) {
+        if (bcache[i].block_no == 0) { lru_idx = i; break; }
+        if (bcache[i].lru_tick < lru_min) {
+            lru_min = bcache[i].lru_tick;
+            lru_idx = i;
+        }
+    }
+    if (bcache[lru_idx].dirty && bcache[lru_idx].block_no != 0) {
+        disk_write_block(bcache[lru_idx].block_no, bcache[lru_idx].data);
+    }
+    bcache[lru_idx].block_no = block;
+    bcache[lru_idx].lru_tick = bcache_tick;
+    bcache[lru_idx].dirty = 0;
+    memcpy(bcache[lru_idx].data, buf, fs.block_size);
+    return 0;
 }
 
 /* Temporary block buffer (1024 bytes – fits our block size) */
@@ -323,10 +437,10 @@ static uint32_t inode_get_block(const ext2_inode_t *inode, uint32_t logical)
         /* Singly indirect */
         if (inode->i_block[EXT2_IND_BLOCK] == 0)
             return 0;
-        uint8_t ind_buf[4096] __attribute__((aligned(4)));
-        if (read_block(inode->i_block[EXT2_IND_BLOCK], ind_buf) != 0)
+        const uint8_t *ind_data = read_block_ptr(inode->i_block[EXT2_IND_BLOCK]);
+        if (!ind_data)
             return 0;
-        uint32_t *ptrs = (uint32_t *)ind_buf;
+        const uint32_t *ptrs = (const uint32_t *)ind_data;
         return ptrs[logical];
     }
 
@@ -335,18 +449,18 @@ static uint32_t inode_get_block(const ext2_inode_t *inode, uint32_t logical)
     if (logical < ptrs_per_block * ptrs_per_block) {
         if (inode->i_block[EXT2_DIND_BLOCK] == 0)
             return 0;
-        uint8_t dind_buf[4096] __attribute__((aligned(4)));
-        if (read_block(inode->i_block[EXT2_DIND_BLOCK], dind_buf) != 0)
+        const uint8_t *dind_data = read_block_ptr(inode->i_block[EXT2_DIND_BLOCK]);
+        if (!dind_data)
             return 0;
-        uint32_t *dptrs = (uint32_t *)dind_buf;
+        const uint32_t *dptrs = (const uint32_t *)dind_data;
         uint32_t ind_index = logical / ptrs_per_block;
         uint32_t ind_off   = logical % ptrs_per_block;
         if (dptrs[ind_index] == 0)
             return 0;
-        uint8_t ind_buf[4096] __attribute__((aligned(4)));
-        if (read_block(dptrs[ind_index], ind_buf) != 0)
+        const uint8_t *ind_data = read_block_ptr(dptrs[ind_index]);
+        if (!ind_data)
             return 0;
-        uint32_t *ptrs = (uint32_t *)ind_buf;
+        const uint32_t *ptrs = (const uint32_t *)ind_data;
         return ptrs[ind_off];
     }
 
@@ -426,10 +540,15 @@ int ext2_read_file(uint32_t ino, void *buf, uint32_t offset, uint32_t size)
     if (ext2_read_inode(ino, &inode) != 0)
         return -1;
 
-    if (offset >= inode.i_size)
+    return ext2_read_file_cached(&inode, buf, offset, size);
+}
+
+int ext2_read_file_cached(const ext2_inode_t *inode, void *buf, uint32_t offset, uint32_t size)
+{
+    if (offset >= inode->i_size)
         return 0;
-    if (offset + size > inode.i_size)
-        size = inode.i_size - offset;
+    if (offset + size > inode->i_size)
+        size = inode->i_size - offset;
 
     uint8_t *dst = (uint8_t *)buf;
     uint32_t bytes_read = 0;
@@ -441,14 +560,14 @@ int ext2_read_file(uint32_t ino, void *buf, uint32_t offset, uint32_t size)
         if (chunk > size - bytes_read)
             chunk = size - bytes_read;
 
-        uint32_t disk_block = inode_get_block(&inode, logical_block);
+        uint32_t disk_block = inode_get_block(inode, logical_block);
         if (disk_block == 0) {
             memset(dst + bytes_read, 0, chunk);  /* sparse: read as zeroes */
         } else {
-            uint8_t blk_buf[4096] __attribute__((aligned(4)));
-            if (read_block(disk_block, blk_buf) != 0)
+            const uint8_t *blk_data = read_block_ptr(disk_block);
+            if (!blk_data)
                 return -1;
-            memcpy(dst + bytes_read, blk_buf + block_off, chunk);
+            memcpy(dst + bytes_read, blk_data + block_off, chunk);
         }
         bytes_read += chunk;
     }
@@ -774,6 +893,13 @@ uint32_t ext2_create(uint32_t dir_ino, const char *name, uint16_t mode)
     memset(&inode, 0, sizeof(inode));
     inode.i_mode = mode;
     inode.i_links_count = 1;
+
+    /* Set owner from current task credentials */
+    task_t *cur = get_current_task();
+    if (cur) {
+        inode.i_uid = cur->euid;
+        inode.i_gid = cur->egid;
+    }
 
     uint8_t ft = EXT2_FT_REG_FILE;
 
@@ -1350,6 +1476,7 @@ int ext2_init(blkdev_t *dev, uint32_t part_lba, int format_if_missing)
            fs.total_blocks, fs.num_groups, fs.blocks_per_group,
            fs.inodes_per_group);
 
+    bcache_invalidate();
     fs_ready = 1;
     return 0;
 }

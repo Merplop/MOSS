@@ -14,9 +14,9 @@
 /*  Static FILE objects for stdin/stdout/stderr                        */
 /* ------------------------------------------------------------------ */
 
-static FILE _stdin  = { .fd = 0, .eof = 0, .error = 0 };
-static FILE _stdout = { .fd = 1, .eof = 0, .error = 0 };
-static FILE _stderr = { .fd = 2, .eof = 0, .error = 0 };
+static FILE _stdin  = { .fd = 0, .eof = 0, .error = 0, .rbuf_pos = 0, .rbuf_len = 0 };
+static FILE _stdout = { .fd = 1, .eof = 0, .error = 0, .rbuf_pos = 0, .rbuf_len = 0 };
+static FILE _stderr = { .fd = 2, .eof = 0, .error = 0, .rbuf_pos = 0, .rbuf_len = 0 };
 
 FILE *stdin  = &_stdin;
 FILE *stdout = &_stdout;
@@ -33,6 +33,8 @@ static FILE *alloc_file(void) {
             file_pool_used[i] = 1;
             file_pool[i].eof = 0;
             file_pool[i].error = 0;
+            file_pool[i].rbuf_pos = 0;
+            file_pool[i].rbuf_len = 0;
             return &file_pool[i];
         }
     }
@@ -117,7 +119,19 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
     char *dst = (char *)ptr;
 
     while (done < total) {
-        ssize_t n = read(stream->fd, dst + done, total - done);
+        /* Serve from read buffer first */
+        if (stream->rbuf_pos < stream->rbuf_len) {
+            size_t avail = stream->rbuf_len - stream->rbuf_pos;
+            size_t want = total - done;
+            size_t chunk = (avail < want) ? avail : want;
+            memcpy(dst + done, stream->rbuf + stream->rbuf_pos, chunk);
+            stream->rbuf_pos += chunk;
+            done += chunk;
+            continue;
+        }
+
+        /* Buffer empty — refill */
+        ssize_t n = read(stream->fd, stream->rbuf, _STDIO_RBUF_SIZE);
         if (n < 0) {
             stream->error = 1;
             break;
@@ -126,7 +140,8 @@ size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream) {
             stream->eof = 1;
             break;
         }
-        done += (size_t)n;
+        stream->rbuf_pos = 0;
+        stream->rbuf_len = (size_t)n;
     }
 
     return done / size;
@@ -155,6 +170,9 @@ size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream) {
 int fseek(FILE *stream, long offset, int whence) {
     if (!stream)
         return -1;
+    /* Invalidate read buffer */
+    stream->rbuf_pos = 0;
+    stream->rbuf_len = 0;
     off_t result = lseek(stream->fd, (off_t)offset, whence);
     if (result < 0)
         return -1;
@@ -165,7 +183,12 @@ int fseek(FILE *stream, long offset, int whence) {
 long ftell(FILE *stream) {
     if (!stream)
         return -1;
-    return (long)lseek(stream->fd, 0, SEEK_CUR);
+    long pos = (long)lseek(stream->fd, 0, SEEK_CUR);
+    if (pos < 0)
+        return -1;
+    /* Subtract buffered bytes not yet consumed */
+    pos -= (long)(stream->rbuf_len - stream->rbuf_pos);
+    return pos;
 }
 
 int feof(FILE *stream) {
@@ -529,6 +552,14 @@ int fprintf(FILE *stream, const char *fmt, ...) {
     return ret;
 }
 
+int vsprintf(char *str, const char *fmt, va_list ap) {
+    return vsnprintf(str, 0x7FFFFFFF, fmt, ap);
+}
+
+int vprintf(const char *fmt, va_list ap) {
+    return vfprintf(stdout, fmt, ap);
+}
+
 int vfprintf(FILE *stream, const char *fmt, va_list ap) {
     char buf[1024];
     int ret = vsnprintf(buf, sizeof(buf), fmt, ap);
@@ -564,16 +595,14 @@ int putchar(int c) {
 }
 
 /* ------------------------------------------------------------------ */
-/*  sscanf — minimal implementation (%d, %x, %s, %c, %u)              */
+/*  vsscanf / sscanf / fscanf — minimal scan (%d, %i, %x, %s, %c, %u, %f) */
 /* ------------------------------------------------------------------ */
 
 static int is_space(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
-int sscanf(const char *str, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
+static int vsscanf(const char *str, const char *fmt, va_list ap) {
     int matched = 0;
     const char *p = str;
 
@@ -589,6 +618,11 @@ int sscanf(const char *str, const char *fmt, ...) {
             continue;
         }
         fmt++; /* skip % */
+
+        /* optional field width */
+        int width = 0;
+        while (*fmt >= '0' && *fmt <= '9')
+            width = width * 10 + (*fmt++ - '0');
 
         if (*fmt == 'd' || *fmt == 'i') {
             int *out = va_arg(ap, int *);
@@ -607,9 +641,26 @@ int sscanf(const char *str, const char *fmt, ...) {
             while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
             *out = val;
             matched++;
+        } else if (*fmt == 'f') {
+            float *out = va_arg(ap, float *);
+            double sign = 1.0;
+            if (*p == '-') { sign = -1.0; p++; }
+            else if (*p == '+') p++;
+            if ((*p < '0' || *p > '9') && *p != '.') break;
+            double val = 0.0;
+            while (*p >= '0' && *p <= '9') val = val * 10.0 + (*p++ - '0');
+            if (*p == '.') {
+                p++;
+                double frac = 0.1;
+                while (*p >= '0' && *p <= '9') {
+                    val += (*p++ - '0') * frac;
+                    frac *= 0.1;
+                }
+            }
+            *out = (float)(val * sign);
+            matched++;
         } else if (*fmt == 'x' || *fmt == 'X') {
             unsigned int *out = va_arg(ap, unsigned int *);
-            /* skip 0x prefix */
             if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
             unsigned int val = 0;
             while (1) {
@@ -627,14 +678,47 @@ int sscanf(const char *str, const char *fmt, ...) {
             matched++;
         } else if (*fmt == 's') {
             char *out = va_arg(ap, char *);
-            while (*p && !is_space(*p)) *out++ = *p++;
+            int n = 0;
+            while (*p && !is_space(*p)) {
+                if (width > 0 && n >= width) break;
+                *out++ = *p++;
+                n++;
+            }
             *out = '\0';
             matched++;
         }
         fmt++;
     }
-    va_end(ap);
     return matched;
+}
+
+int sscanf(const char *str, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vsscanf(str, fmt, ap);
+    va_end(ap);
+    return ret;
+}
+
+int fscanf(FILE *stream, const char *fmt, ...) {
+    if (!stream) return -1;
+    /* Read a line from the stream into a buffer, then sscanf it */
+    char buf[1024];
+    int i = 0;
+    int c;
+    while (i < (int)sizeof(buf) - 1) {
+        c = fgetc(stream);
+        if (c == EOF) break;
+        buf[i++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (i == 0) return -1;
+    buf[i] = '\0';
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vsscanf(buf, fmt, ap);
+    va_end(ap);
+    return ret;
 }
 
 void perror(const char *s) {

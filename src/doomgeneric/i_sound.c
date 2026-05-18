@@ -18,7 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#if defined(FEATURE_SOUND) && !defined(__DJGPP__)
+#if defined(FEATURE_SOUND) && !defined(__DJGPP__) && !defined(NORMALUNIX)
 #include <SDL_mixer.h>
 #endif
 
@@ -144,6 +144,7 @@ static void InitMusicModule(void)
 void I_InitSound(boolean use_sfx_prefix)
 {  
     boolean nosound, nosfx, nomusic;
+
 
     //!
     // @vanilla

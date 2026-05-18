@@ -24,10 +24,17 @@ extern "C" {
 #define SEEK_END 2
 #endif
 
+/* Internal read buffer size */
+#define _STDIO_RBUF_SIZE 4096
+
 typedef struct _FILE {
     int   fd;
     int   eof;
     int   error;
+    /* Read buffer for reducing syscall overhead */
+    unsigned char rbuf[_STDIO_RBUF_SIZE];
+    size_t rbuf_pos;   /* next byte to consume */
+    size_t rbuf_len;   /* valid bytes in buffer */
 } FILE;
 
 extern FILE *stdin;
@@ -49,6 +56,7 @@ void  clearerr(FILE *stream);
 int   fflush(FILE *stream);
 
 int   fgetc(FILE *stream);
+#define getc(stream) fgetc(stream)
 int   fputc(int c, FILE *stream);
 char *fgets(char *s, int size, FILE *stream);
 int   fputs(const char *s, FILE *stream);
@@ -58,7 +66,9 @@ int fprintf(FILE *stream, const char *fmt, ...) __attribute__((format(printf, 2,
 int sprintf(char *str, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 int snprintf(char *str, size_t size, const char *fmt, ...) __attribute__((format(printf, 3, 4)));
 int vsnprintf(char *str, size_t size, const char *fmt, va_list ap);
+int vsprintf(char *str, const char *fmt, va_list ap);
 int vfprintf(FILE *stream, const char *fmt, va_list ap);
+int vprintf(const char *fmt, va_list ap);
 int puts(const char *s);
 int putchar(int c);
 
@@ -66,6 +76,7 @@ int rename(const char *oldpath, const char *newpath);
 int remove(const char *path);
 
 int sscanf(const char *str, const char *fmt, ...);
+int fscanf(FILE *stream, const char *fmt, ...);
 
 void perror(const char *s);
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);

@@ -41,4 +41,14 @@ void tss_init(uint32_t kernel_ss, uint32_t kernel_esp0);
 /* Update esp0 in the TSS (called on every context switch). */
 void tss_set_kernel_stack(uint32_t esp0);
 
+/* Set a TLS GDT entry. entry_number 6-8, returns entry or -1. */
+int gdt_set_tls(int entry_number, uint32_t base, uint32_t limit);
+
+/* Reload GS with a specific selector value. */
+void gdt_load_gs(uint16_t selector);
+
+/* GDT indices for TLS (matching Linux: entries 6,7,8) */
+#define GDT_TLS_MIN  6
+#define GDT_TLS_MAX  8
+
 #endif /* ARCH_I386_TSS_H */

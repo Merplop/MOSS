@@ -17,6 +17,8 @@
 #include <stdio.h>
 #include <kernel/kernel.h>
 #include <kernel/memory_manager.h>
+#include <kernel/sched.h>
+#include <kernel/elf.h>
 #include "idt.h"
 #include "paging.h"
 
@@ -132,6 +134,21 @@ static void page_fault_handler(struct isr_regs *regs)
         printf("  PTE[%u]=0x%x", table_idx, pt[table_idx]);
     }
     printf("\r\n");
+
+    /* If the fault was in user mode, kill the task instead of panicking */
+    if (user) {
+        task_t *t = get_current_task();
+        if (t) {
+            printf("  Killing task PID %u\r\n", (unsigned)t->pid);
+            elf_cleanup_process(t);
+            /* Unblock parent so it doesn't hang forever */
+            task_t *parent = find_task_by_pid(t->parent_pid);
+            if (parent && parent->state == TASK_BLOCKED)
+                unblock_task(parent);
+            exit_task(139); /* 128 + SIGSEGV(11) */
+            /* not reached */
+        }
+    }
 
     panic();
 }

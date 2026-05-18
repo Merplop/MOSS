@@ -6,5 +6,6 @@ arch/i386/paging.o: arch/i386/paging.c \
  /usr/lib/gcc/i686-elf/11.2.0/include/stddef.h \
  /usr/lib/gcc/i686-elf/11.2.0/include/stdbool.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/stdio.h \
- include/kernel/kernel.h include/kernel/memory_manager.h arch/i386/idt.h \
+ include/kernel/kernel.h include/kernel/memory_manager.h \
+ include/kernel/sched.h include/kernel/elf.h arch/i386/idt.h \
  arch/i386/paging.h

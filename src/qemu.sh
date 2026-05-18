@@ -9,4 +9,4 @@ if [ ! -f "$DISK_IMG" ]; then
     dd if=/dev/zero of="$DISK_IMG" bs=1M count=256 2>/dev/null
 fi
 
-qemu-system-$(./target-triplet-to-arch.sh $HOST) -audiodev pa,id=speaker -machine pcspk-audiodev=speaker -cdrom moss.iso -drive file=$DISK_IMG,format=raw,if=ide,index=0
+qemu-system-$(./target-triplet-to-arch.sh $HOST) -audiodev pa,id=speaker -machine pcspk-audiodev=speaker -device sb16,audiodev=speaker -netdev user,id=net0 -device rtl8139,netdev=net0 -serial file:serial.log -cdrom moss.iso -drive file=$DISK_IMG,format=raw,if=ide,index=0

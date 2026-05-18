@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include <kernel/keyboard.h>
+#include <kernel/sched.h>
 
 /* Forward declarations for arch-specific functions */
 struct isr_regs;
@@ -237,6 +238,13 @@ static void keyboard_irq_handler(struct isr_regs *regs) {
         ev.ascii = ch;
     }
 
+    /* Ctrl+C → send SIGINT to the foreground (current) task */
+    if (ev.ascii == 3) {  /* ASCII ETX = Ctrl+C */
+        task_t *fg = get_current_task();
+        if (fg)
+            task_send_signal(fg, SIGINT);
+    }
+
     eq_push(&ev);
 }
 
@@ -262,6 +270,10 @@ void keyboard_init(void) {
 
 int keyboard_poll_event(key_event_t *out) {
     return eq_pop(out);
+}
+
+int keyboard_has_events(void) {
+    return eq_tail != eq_head;
 }
 
 /*

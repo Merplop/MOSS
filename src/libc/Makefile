@@ -39,6 +39,8 @@ string/memcpy.o \
 string/memmove.o \
 string/memset.o \
 string/strlen.o \
+string/strcpy.o \
+string/strncat.o \
 moss/commands/reb.o \
 moss/commands/hlt.o \
 moss/commands/colour.o \

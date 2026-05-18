@@ -6,9 +6,10 @@ kernel/kernel.o: kernel/kernel.c \
  /home/miro/Source/MOSS/src/sysroot/usr/include/string.h \
  /usr/lib/gcc/i686-elf/11.2.0/include/stddef.h \
  /usr/lib/gcc/i686-elf/11.2.0/include/stdbool.h include/kernel/tty.h \
- include/kernel/keyboard.h include/kernel/kernel.h \
+ include/kernel/keyboard.h include/kernel/mouse.h include/kernel/kernel.h \
  include/kernel/memory_manager.h include/kernel/sched.h \
  include/kernel/ext2.h include/kernel/blkdev.h include/kernel/syscall.h \
+ include/kernel/users.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/sys/io.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/sys/sleep.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/moss/commands.h \

@@ -11,7 +11,7 @@
 #define PIT_BASE_FREQ  1193182
 
 /* Desired tick frequency (Hz) */
-#define TIMER_FREQ  100
+#define TIMER_FREQ  1000
 
 /* Returns the number of ticks since boot. */
 uint32_t timer_get_ticks(void);

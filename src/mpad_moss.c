@@ -144,19 +144,30 @@ int get_window_size(int *rows, int *cols) {
 struct abuf {
     char *b;
     int len;
+    int cap;
 };
-#define ABUF_INIT {NULL, 0}
+#define ABUF_INIT {NULL, 0, 0}
+#define ABUF_INITIAL_CAP 32768  /* 32KB — enough for a full screen refresh */
 
 static void abAppend(struct abuf *ab, const char *s, int len) {
-    char *newbuf = realloc(ab->b, (size_t)ab->len + (size_t)len);
-    if (!newbuf) die("realloc");
-    memcpy(&newbuf[ab->len], s, (size_t)len);
-    ab->b = newbuf;
+    if (ab->len + len > ab->cap) {
+        int new_cap = ab->cap ? ab->cap : ABUF_INITIAL_CAP;
+        while (new_cap < ab->len + len)
+            new_cap *= 2;
+        char *newbuf = realloc(ab->b, (size_t)new_cap);
+        if (!newbuf) die("realloc");
+        ab->b = newbuf;
+        ab->cap = new_cap;
+    }
+    memcpy(&ab->b[ab->len], s, (size_t)len);
     ab->len += len;
 }
 
 static void abFree(struct abuf *ab) {
     free(ab->b);
+    ab->b = NULL;
+    ab->len = 0;
+    ab->cap = 0;
 }
 
 /* ----- buffer/line primitives ------- */

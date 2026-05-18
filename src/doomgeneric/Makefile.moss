@@ -2,24 +2,30 @@
 # doomgeneric — MOSS OS build
 #
 # Produces a statically-linked i386 ELF: "doom"
-# Uses the MOSS user-space libc (libc.a + crt0.o + user.ld)
+# Uses musl libc (libc.a + crt1.o) and the MOSS linker script
 ################################################################
 
 CC      = i686-elf-gcc
 AR      = i686-elf-ar
 LD      = i686-elf-gcc
 
-USERLIBC = ../userlibc
+MUSL    = ../musl-out
+USERLIBC_INC = ../userlibc/include
+LDSCRIPT = ../userlibc/user.ld
 
 CFLAGS  = -O2 -g -ffreestanding -nostdlib -Wall -Wextra \
-           -I$(USERLIBC)/include -I. \
+           -I$(MUSL)/include -I$(USERLIBC_INC) -I. \
            -DNORMALUNIX -DLINUX \
            -DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200 \
            -Wno-unused-parameter -Wno-pointer-sign \
            -Wno-sign-compare -Wno-missing-field-initializers \
            -std=gnu11
 
-LDFLAGS = -ffreestanding -nostdlib -T $(USERLIBC)/user.ld
+# Flags for MOSS syscall wrappers (need userlibc syscall.h first)
+MOSS_CFLAGS = -O2 -g -ffreestanding -nostdlib -Wall \
+              -I$(USERLIBC_INC) -I$(MUSL)/include -std=gnu11
+
+LDFLAGS = -ffreestanding -nostdlib -T $(LDSCRIPT)
 
 OBJDIR  = build
 OUTPUT  = doom
@@ -42,9 +48,13 @@ SRC_DOOM = dummy.o am_map.o doomdef.o doomstat.o dstrings.o \
            tables.o v_video.o wi_stuff.o \
            w_checksum.o w_file.o w_main.o w_wad.o z_zone.o \
            w_file_stdc.o i_input.o i_video.o \
-           doomgeneric.o doomgeneric_moss.o
+           doomgeneric.o doomgeneric_moss.o \
+           mus2mid.o gusconf.o
 
-OBJS = $(addprefix $(OBJDIR)/, $(SRC_DOOM))
+# MOSS syscall wrapper objects
+MOSS_OBJS = $(OBJDIR)/moss_stubs.o
+
+OBJS = $(addprefix $(OBJDIR)/, $(SRC_DOOM)) $(MOSS_OBJS)
 
 all: $(OUTPUT)
 
@@ -52,9 +62,9 @@ clean:
 	rm -rf $(OBJDIR)
 	rm -f $(OUTPUT)
 
-$(OUTPUT): $(OBJS) $(USERLIBC)/libc.a $(USERLIBC)/crt0.o
+$(OUTPUT): $(OBJS) $(MUSL)/lib/libc.a $(MUSL)/lib/crt1.o
 	@echo "[Linking $@]"
-	$(LD) $(LDFLAGS) -o $@ $(USERLIBC)/crt0.o $(OBJS) $(USERLIBC)/libc.a -lgcc
+	$(LD) $(LDFLAGS) -o $@ $(MUSL)/lib/crt1.o $(MUSL)/lib/crti.o $(OBJS) $(MUSL)/lib/libc.a $(MUSL)/lib/libm.a $(MUSL)/lib/crtn.o -lgcc
 
 $(OBJS): | $(OBJDIR)
 
@@ -64,5 +74,10 @@ $(OBJDIR):
 $(OBJDIR)/%.o: %.c
 	@echo "[Compiling $<]"
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# MOSS syscall wrapper compile rules
+$(OBJDIR)/moss_stubs.o: moss_stubs.c
+	@echo "[Compiling MOSS $<]"
+	$(CC) $(MOSS_CFLAGS) -c $< -o $@
 
 .PHONY: all clean

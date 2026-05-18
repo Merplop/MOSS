@@ -33,6 +33,11 @@ echo "Creating directory structure ..."
 mkdir -p "$MOUNT_DIR/bin"
 mkdir -p "$MOUNT_DIR/usr/lib/tcc/include"
 mkdir -p "$MOUNT_DIR/usr/include/sys"
+mkdir -p "$MOUNT_DIR/tmp"
+mkdir -p "$MOUNT_DIR/dev"
+mkdir -p "$MOUNT_DIR/root"
+mkdir -p "$MOUNT_DIR/etc"
+chmod 1777 "$MOUNT_DIR/tmp"
 
 # --- TCC binary ---
 echo "Copying TCC binary ..."
@@ -78,6 +83,66 @@ rm -f /tmp/moss_empty.S
 # --- Copy the user linker script ---
 echo "Copying linker script ..."
 cp "$SCRIPT_DIR/userlibc/user.ld" "$MOUNT_DIR/usr/lib/tcc/moss.ld"
+
+# --- GNU Coreutils (cross-compiled against musl) ---
+echo "Copying GNU coreutils ..."
+COREUTILS_SRC="$SCRIPT_DIR/coreutils/src"
+if [ -d "$COREUTILS_SRC" ]; then
+    CORE_UTILS="ls cat echo cp mv mkdir rm rmdir ln pwd wc head tail
+        touch chmod chown date env id whoami basename dirname
+        true false yes sleep test printf seq tr cut sort uniq
+        tee readlink realpath mktemp uname expr
+        comm join paste fold fmt nl od tac shuf"
+    for util in $CORE_UTILS; do
+        if [ -f "$COREUTILS_SRC/$util" ]; then
+            i686-elf-strip -o "$MOUNT_DIR/bin/$util" "$COREUTILS_SRC/$util"
+        fi
+    done
+    # Also install [ as a link to test
+    if [ -f "$MOUNT_DIR/bin/test" ]; then
+        cp "$MOUNT_DIR/bin/test" "$MOUNT_DIR/bin/["
+    fi
+    echo "  $(ls "$MOUNT_DIR/bin" | wc -l) utilities installed"
+else
+    echo "  WARNING: coreutils not found at $COREUTILS_SRC"
+fi
+
+# --- Bash ---
+echo "Copying bash ..."
+BASH_BIN="$SCRIPT_DIR/bash/bash"
+if [ -f "$BASH_BIN" ]; then
+    i686-elf-strip -o "$MOUNT_DIR/bin/bash" "$BASH_BIN"
+    # Also provide /bin/sh as a symlink/copy for scripts
+    cp "$MOUNT_DIR/bin/bash" "$MOUNT_DIR/bin/sh"
+    echo "  bash installed ($(du -h "$MOUNT_DIR/bin/bash" | cut -f1))"
+else
+    echo "  WARNING: bash binary not found at $BASH_BIN"
+fi
+
+# --- Root home directory ---
+echo "Creating /root/.bashrc ..."
+cat > "$MOUNT_DIR/root/.bashrc" << 'BASHRC'
+export PS1='\u@\h:\w\$ '
+export PATH=/bin:/usr/bin
+BASHRC
+
+cat > "$MOUNT_DIR/root/.profile" << 'PROFILE'
+[ -f ~/.bashrc ] && . ~/.bashrc
+PROFILE
+
+# --- /etc files ---
+cat > "$MOUNT_DIR/etc/passwd" << 'PASSWD'
+root:x:0:0:root:/root:/bin/bash
+PASSWD
+
+cat > "$MOUNT_DIR/etc/group" << 'GROUP'
+root:x:0:root
+GROUP
+
+cat > "$MOUNT_DIR/etc/shells" << 'SHELLS'
+/bin/bash
+/bin/sh
+SHELLS
 
 echo "Syncing ..."
 sync

@@ -34,6 +34,7 @@ KERNEL_OBJS=\
 $(KERNEL_ARCH_OBJS) \
 kernel/kernel.o \
 kernel/keyboard.o \
+kernel/mouse.o \
 kernel/fs.o \
 kernel/commands.o \
 kernel/shell.o \
@@ -43,6 +44,11 @@ kernel/ext2.o \
 kernel/ramdisk.o \
 kernel/syscall.o \
 kernel/elf.o \
+kernel/sync.o \
+kernel/net.o \
+kernel/tcp.o \
+kernel/browse.o \
+kernel/users.o \
 sched/sched.o \
 
 #KERNEL_LIBS_SRC=\

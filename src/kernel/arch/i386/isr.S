@@ -115,6 +115,10 @@ isr_common_stub:
     movw  %ds, %ax
     pushl %eax
 
+    /* Save GS separately (may hold TLS selector) */
+    movw  %gs, %ax
+    pushl %eax
+
     /* Load the kernel data segment (selector 0x10) */
     movw  $0x10, %ax
     movw  %ax, %ds
@@ -127,12 +131,15 @@ isr_common_stub:
     call  isr_handler
     addl  $4, %esp
 
+    /* Restore GS (may be TLS selector, modified by set_thread_area) */
+    popl  %eax
+    movw  %ax, %gs
+
     /* Restore the original data segment */
     popl  %eax
     movw  %ax, %ds
     movw  %ax, %es
     movw  %ax, %fs
-    movw  %ax, %gs
 
     /* Restore general-purpose registers */
     popal

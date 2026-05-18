@@ -7,5 +7,5 @@ kernel/shell.o: kernel/shell.c \
  /usr/lib/gcc/i686-elf/11.2.0/include/stddef.h \
  /usr/lib/gcc/i686-elf/11.2.0/include/stdbool.h include/kernel/tty.h \
  include/kernel/keyboard.h include/kernel/kernel.h include/kernel/ext2.h \
- include/kernel/blkdev.h \
+ include/kernel/blkdev.h include/kernel/elf.h include/kernel/users.h \
  /home/miro/Source/MOSS/src/sysroot/usr/include/moss/commands.h

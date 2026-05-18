@@ -18,4 +18,7 @@ typedef struct {
 /* Map the framebuffer and fill info. Returns framebuffer address or 0. */
 uint32_t moss_fb_map(moss_fbinfo_t *info);
 
+/* Flush the shadow framebuffer to the display. */
+void moss_fb_flush(void);
+
 #endif /* _MOSS_FB_H */

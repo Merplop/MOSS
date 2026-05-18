@@ -706,6 +706,7 @@ char *D_FindIWAD(int mask, GameMission_t *mission)
     int iwadparm;
     int i;
 
+
     // Check for the -iwad parameter
 
     //!

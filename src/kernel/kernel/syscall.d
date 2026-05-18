@@ -9,4 +9,4 @@ kernel/syscall.o: kernel/syscall.c \
  include/kernel/syscall.h include/kernel/sched.h include/kernel/tty.h \
  include/kernel/elf.h include/kernel/memory_manager.h \
  include/kernel/ext2.h include/kernel/blkdev.h include/kernel/kernel.h \
- include/kernel/keyboard.h
+ include/kernel/keyboard.h include/kernel/mouse.h include/kernel/users.h

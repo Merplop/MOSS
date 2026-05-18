@@ -8,9 +8,7 @@
 #include <syscall.h>
 
 time_t time(time_t *tloc) {
-    time_t t = (time_t)_syscall0(SYS_GETTIME);
-    if (tloc)
-        *tloc = t;
+    time_t t = (time_t)_syscall1(SYS_TIME, (uint32_t)tloc);
     return t;
 }
 

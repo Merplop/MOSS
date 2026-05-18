@@ -7,12 +7,14 @@
 #include <string.h>
 #include <kernel/tty.h>
 #include <kernel/keyboard.h>
+#include <kernel/mouse.h>
 #include <kernel/kernel.h>
 #include <kernel/memory_manager.h>
 #include <kernel/sched.h>
 #include <kernel/ext2.h>
 #include <kernel/blkdev.h>
 #include <kernel/syscall.h>
+#include <kernel/users.h>
 #include <sys/io.h>
 #include <sys/sleep.h>
 #include <moss/commands.h>
@@ -25,6 +27,12 @@ void paging_init(uint32_t mem_size_kb, uint32_t fb_phys, uint32_t fb_size);
 
 /* TSS / GDT */
 void tss_init(uint32_t kernel_ss, uint32_t kernel_esp0);
+
+/* PCI bus enumeration */
+void pci_init(void);
+
+/* RTL8139 NIC driver */
+int rtl8139_init(void);
 
 /* ATA disk driver */
 void ata_init(void);
@@ -158,11 +166,16 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 
 	/* Now the terminal works */
 	terminal_initialize();
+
+	/* Initialize serial port for debug logging (mirrors to serial.log) */
+	extern void serial_init(void);
+	serial_init();
+
 	change_colour(7, 1);
 
 	/* Set up the IDT and PIT before enabling interrupts */
 	idt_init();
-	timer_init(100);  /* 100 Hz tick rate */
+	timer_init(1000);  /* 1000 Hz tick rate (1 ms per tick) */
 
 	/* Initialize memory manager before anything that calls malloc.
 	 * Save the GRUB memory map before placing the bitmap. */
@@ -238,12 +251,36 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 	/* Initialize interrupt-driven PS/2 keyboard (IRQ1) */
 	keyboard_init();
 
+	/* Initialize PS/2 mouse (IRQ12) */
+	mouse_init();
+
 	/* ---- Filesystem initialisation ----
 	 * Priority:
 	 *   1. GRUB module → load as ramdisk (works on USB / any hardware)
 	 *   2. ATA drives → probe for existing ext2 (works in QEMU)
 	 */
+	pci_init();  /* enumerate PCI bus — must come before device drivers that use PCI */
 	ata_init();  /* always probe ATA so 'disks' command works */
+
+	/* Probe for RTL8139 NIC (PCI) */
+	{
+		if (rtl8139_init() == 0)
+			printf("[kernel] RTL8139 NIC ready\n");
+	}
+
+	/* Initialize network stack (ARP/IP/ICMP) */
+	{
+		extern void net_init(void);
+		net_init();
+	}
+
+	/* Probe for Sound Blaster 16 (ISA, I/O 0x220, IRQ 5, DMA 1) */
+	{
+		extern int sb16_init(void);
+		if (sb16_init() == 0)
+			printf("[kernel] Sound Blaster 16 initialized\n");
+	}
+
 	static ramdisk_t g_ramdisk;   /* static so it lives forever */
 	int fs_mounted = 0;
 
@@ -332,6 +369,9 @@ void _main(multiboot_info_t* mbd, unsigned int magic) {
 		}
 	}
 	cwd_ino = EXT2_ROOT_INO;
+
+	/* Initialise user management subsystem */
+	users_init();
 
 	/* Create the boot/idle task (pid 0) — uses the current stack */
 	task_t idle_task = task_create(NULL, DEFAULT_PRIORITY);

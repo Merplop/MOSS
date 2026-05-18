@@ -56,7 +56,7 @@ void paging_switch_directory(uint32_t *pd);
 /* ------------------------------------------------------------------ */
 
 #define PAGE_SIZE       4096
-#define MAX_USER_PAGES  2048
+#define MAX_USER_PAGES  4096
 #define MAX_PAGE_SLOTS  16
 
 static uint32_t slot_vaddrs[MAX_PAGE_SLOTS][MAX_USER_PAGES];
@@ -64,8 +64,8 @@ static uint32_t slot_paddrs[MAX_PAGE_SLOTS][MAX_USER_PAGES];
 static int      slot_count[MAX_PAGE_SLOTS];
 static int      slot_in_use[MAX_PAGE_SLOTS];
 
-/* User stack: 16 KiB (4 pages), grows downward from USER_STACK_TOP */
-#define USER_STACK_PAGES 4
+/* User stack: 1 MiB (256 pages), grows downward from USER_STACK_TOP */
+#define USER_STACK_PAGES 256
 #define USER_STACK_TOP   0xBFFFF000u
 #define USER_STACK_BASE  (USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE)
 
@@ -166,14 +166,21 @@ uint32_t elf_get_slot_paddr(int slot, int index) {
 /*  User-program task state                                            */
 /* ------------------------------------------------------------------ */
 
-/* Saved between elf_load_and_exec() and user_task_entry(). */
-static uint32_t pending_entry_eip;
-static uint32_t pending_user_esp;
-static task_t  *waiting_parent;  /* shell task to unblock on exit */
+static task_t  *waiting_parent;      /* shell task to unblock on exit */
+static uint32_t waiting_child_pid;   /* PID of the child that should trigger unblock */
 
 /* Called by SYS_EXIT handler to clean up user-mode resources. */
 task_t *elf_get_waiting_parent(void) {
     return waiting_parent;
+}
+
+uint32_t elf_get_waiting_child_pid(void) {
+    return waiting_child_pid;
+}
+
+void elf_clear_waiting_parent(void) {
+    waiting_parent = NULL;
+    waiting_child_pid = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -208,7 +215,8 @@ jump_usermode(uint32_t entry_eip, uint32_t user_esp) {
 /* Entry function for the user-program scheduler task.
  * This runs on the new task's kernel stack, then does iret to ring 3. */
 static void user_task_entry(void) {
-    jump_usermode(pending_entry_eip, pending_user_esp);
+    task_t *self = get_current_task();
+    jump_usermode(self->user_entry_eip, self->user_entry_esp);
 }
 
 /* ------------------------------------------------------------------ */
@@ -371,7 +379,7 @@ int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv) {
         }
     }
 
-    printf("elf: loaded, entry=0x%x brk=0x%x\r\n", ehdr.e_entry, highest_vaddr);
+    //printf("elf: loaded, entry=0x%x brk=0x%x\r\n", ehdr.e_entry, highest_vaddr);
 
     /* ----------------------------------------------------------------
      *  Build argc/argv on the user stack.
@@ -392,48 +400,86 @@ int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv) {
         str_addrs[i] = sp;
     }
 
-    sp &= ~3u;
+    /* envp: push default environment variables */
+    static const char *default_env[] = {
+        "PATH=/bin:/usr/bin",
+        "HOME=/root",
+        "TERM=linux",
+        "SHELL=/bin/bash",
+        "USER=root",
+        "LOGNAME=root",
+        "HOSTNAME=moss",
+        "PWD=/",
+        "LANG=C",
+        "PS1=\\u@\\h:\\w\\$ ",
+        NULL
+    };
+    int nenv = 0;
+    for (int i = 0; default_env[i]; i++) nenv++;
+    uint32_t env_addrs[16];
 
-    sp -= 4;
-    {
+    /* Push env strings onto user stack */
+    for (int i = nenv - 1; i >= 0; i--) {
+        size_t len = strlen(default_env[i]) + 1;
+        sp -= len;
         uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
         uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
-        *(uint32_t *)(phys + (sp & (PAGE_SIZE - 1))) = 0;
-    }
-    for (int i = nargs - 1; i >= 0; i--) {
-        sp -= 4;
-        uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
-        uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
-        *(uint32_t *)(phys + (sp & (PAGE_SIZE - 1))) = str_addrs[i];
-    }
-    uint32_t argv_start = sp;
-
-    sp -= 4;
-    {
-        uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
-        uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
-        *(uint32_t *)(phys + (sp & (PAGE_SIZE - 1))) = argv_start;
-    }
-    sp -= 4;
-    {
-        uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
-        uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
-        *(uint32_t *)(phys + (sp & (PAGE_SIZE - 1))) = (uint32_t)nargs;
+        if (phys == 0) { elf_free_page_slot(slot); paging_free_user_directory(new_pd); return -1; }
+        memcpy((void *)(phys + (sp & (PAGE_SIZE - 1))), default_env[i], len);
+        env_addrs[i] = sp;
     }
 
-    /* Save entry point for the new task */
-    pending_entry_eip = ehdr.e_entry;
-    pending_user_esp  = sp;
-    waiting_parent    = get_current_task();
+    sp &= ~0xFu;  /* 16-byte align before pointer table */
+
+    /* Helper macro to push a 32-bit value onto the user stack */
+    #define PUSH32(val) do { \
+        sp -= 4; \
+        uint32_t _pv = sp & ~(PAGE_SIZE - 1); \
+        uint32_t _ph = paging_get_physical_in(new_pd, _pv); \
+        if (_ph == 0) { elf_free_page_slot(slot); paging_free_user_directory(new_pd); return -1; } \
+        *(uint32_t *)(_ph + (sp & (PAGE_SIZE - 1))) = (uint32_t)(val); \
+    } while (0)
+
+    /* Auxiliary vector (auxv) — pushed first so it sits at highest
+     * addresses, right after the envp NULL in memory layout:
+     * [argc, argv..., NULL, envp..., NULL, auxv..., AT_NULL] */
+    PUSH32(0); PUSH32(0);     /* AT_NULL(0) = end of auxv */
+    PUSH32(4096); PUSH32(6);  /* AT_PAGESZ(6) = 4096 */
+
+    /* envp NULL terminator */
+    PUSH32(0);
+
+    /* envp pointers */
+    for (int i = nenv - 1; i >= 0; i--)
+        PUSH32(env_addrs[i]);
+
+    /* argv NULL terminator */
+    PUSH32(0);
+
+    /* argv pointers (reversed so argv[0] is at lowest address) */
+    for (int i = nargs - 1; i >= 0; i--)
+        PUSH32(str_addrs[i]);
+
+    /* argc */
+    PUSH32(nargs);
+
+    #undef PUSH32
+
+    waiting_parent = get_current_task();
 
     /* Create a new scheduler task that will jump to user mode */
     task_t user_task = task_create(user_task_entry, DEFAULT_PRIORITY);
+    user_task.user_entry_eip = ehdr.e_entry;
+    user_task.user_entry_esp = sp;
     user_task.brk_start   = highest_vaddr;
     user_task.brk_current = highest_vaddr;
     user_task.page_dir    = new_pd;
     user_task.user_pages_slot = slot;
     user_task.parent_pid  = waiting_parent ? waiting_parent->pid : 0;
     admit_task(&user_task);
+
+    /* Record which child PID should trigger the unblock */
+    waiting_child_pid = user_task.pid;
 
     /* Block the calling task (shell) until the user program exits.
      * SYS_EXIT in syscall.c will unblock us. */
@@ -443,4 +489,266 @@ int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv) {
      * Cleanup is done by SYS_EXIT → elf_cleanup_process(). */
 
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/*  execve: replace current process image with a new ELF               */
+/* ------------------------------------------------------------------ */
+
+/*
+ * elf_exec_replace() — loads a new ELF into the CURRENT task's address
+ * space, destroying the old image.  On success, never returns (jumps
+ * to user mode).  On failure, returns -1 (caller must handle).
+ *
+ * Parameters:
+ *   ino       — ext2 inode number of the ELF executable
+ *   argc      — argument count
+ *   argv      — argument vector (kernel-side copies)
+ *   envc      — environment variable count
+ *   envp      — environment vector (kernel-side copies)
+ *
+ * This is called from the SYS_EXECVE handler.
+ */
+int elf_exec_replace(uint32_t ino, int argc, char **argv, int envc, char **envp) {
+    task_t *current = get_current_task();
+    if (!current)
+        return -1;
+
+    ext2_inode_t inode;
+    if (ext2_read_inode(ino, &inode) != 0)
+        return -1;
+    if (inode.i_size < sizeof(Elf32_Ehdr))
+        return -1;
+
+    /* Read and validate ELF header */
+    Elf32_Ehdr ehdr;
+    if (ext2_read_file(ino, &ehdr, 0, sizeof(ehdr)) != (int)sizeof(ehdr))
+        return -1;
+    if (elf_validate(&ehdr) != 0)
+        return -1;
+
+    /* Read program headers */
+    uint32_t ph_table_size = ehdr.e_phnum * ehdr.e_phentsize;
+    if (ph_table_size > 1024)
+        return -1;
+    uint8_t phdr_buf[1024];
+    if (ext2_read_file(ino, phdr_buf, ehdr.e_phoff, ph_table_size)
+        != (int)ph_table_size)
+        return -1;
+
+    /* --- Point of no return: destroy old address space --- */
+
+    /* Disable interrupts to prevent the scheduler from seeing a
+     * half-torn-down address space (dangling page_dir pointer). */
+    asm volatile("cli");
+
+    /* Save old PD/slot BEFORE allocating new ones — we must not free
+     * the old PD while CR3 still points to it, because:
+     *   1. The allocator could reuse the frame, and
+     *   2. paging_switch_directory() skips the CR3 write (no TLB flush)
+     *      when the new PD happens to be at the same physical address.
+     * Allocate the new PD first, switch CR3, THEN free the old one. */
+    uint32_t *old_pd   = current->page_dir;
+    int       old_slot = current->user_pages_slot;
+
+    uint32_t *new_pd = paging_create_user_directory();
+    if (!new_pd) {
+        asm volatile("sti");
+        exit_task(-1);
+        __builtin_unreachable();
+    }
+
+    int slot = elf_alloc_page_slot();
+    if (slot < 0) {
+        paging_free_user_directory(new_pd);
+        asm volatile("sti");
+        exit_task(-1);
+        __builtin_unreachable();
+    }
+
+    /* Update task with new page directory */
+    current->page_dir = new_pd;
+    current->user_pages_slot = slot;
+
+    /* Switch CR3 to the new page directory (guaranteed different address
+     * from old_pd since old_pd hasn't been freed yet → TLB is flushed). */
+    paging_switch_directory(new_pd);
+
+    /* NOW it's safe to tear down the old address space */
+    if (old_slot >= 0)
+        elf_free_page_slot(old_slot);
+    if (old_pd)
+        paging_free_user_directory(old_pd);
+
+    /* Clear stale TLS state inherited from fork parent — the new
+     * program will call set_thread_area to set up its own TLS. */
+    current->tls_gs    = 0;
+    current->tls_entry = 0;
+    current->tls_base  = 0;
+    current->tls_limit = 0;
+
+    /* POSIX: exec resets caught signals to SIG_DFL (ignored signals stay) */
+    for (int i = 1; i < _NSIG; i++) {
+        if (current->sig_handlers[i] != SIG_IGN)
+            current->sig_handlers[i] = SIG_DFL;
+    }
+    current->sig_pending = 0;
+    current->in_signal   = 0;
+
+    asm volatile("sti");
+
+    /* Track highest vaddr for brk */
+    uint32_t highest_vaddr = 0;
+
+    /* Load PT_LOAD segments */
+    for (int i = 0; i < ehdr.e_phnum; i++) {
+        Elf32_Phdr *ph = (Elf32_Phdr *)(phdr_buf + i * ehdr.e_phentsize);
+        if (ph->p_type != PT_LOAD || ph->p_memsz == 0)
+            continue;
+
+        uint32_t seg_start = ph->p_vaddr & ~(PAGE_SIZE - 1);
+        uint32_t seg_end   = (ph->p_vaddr + ph->p_memsz + PAGE_SIZE - 1)
+                             & ~(PAGE_SIZE - 1);
+
+        if (seg_end > highest_vaddr)
+            highest_vaddr = seg_end;
+
+        for (uint32_t addr = seg_start; addr < seg_end; addr += PAGE_SIZE) {
+            if (elf_map_user_page_in(addr, new_pd, slot) == NULL) {
+                exit_task(-1);
+                __builtin_unreachable();
+            }
+        }
+
+        /* Copy file data */
+        uint32_t bytes_left = ph->p_filesz;
+        uint32_t file_off = ph->p_offset;
+        uint32_t vaddr = ph->p_vaddr;
+
+        while (bytes_left > 0) {
+            uint32_t page_vaddr = vaddr & ~(PAGE_SIZE - 1);
+            uint32_t page_off   = vaddr & (PAGE_SIZE - 1);
+            uint32_t chunk = PAGE_SIZE - page_off;
+            if (chunk > bytes_left)
+                chunk = bytes_left;
+
+            uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
+            if (phys == 0) {
+                exit_task(-1);
+                __builtin_unreachable();
+            }
+            uint8_t *dst = (uint8_t *)(phys + page_off);
+
+            if (ext2_read_file(ino, dst, file_off, chunk) != (int)chunk) {
+                exit_task(-1);
+                __builtin_unreachable();
+            }
+
+            file_off   += chunk;
+            vaddr      += chunk;
+            bytes_left -= chunk;
+        }
+    }
+
+    /* Allocate user stack */
+    for (uint32_t addr = USER_STACK_BASE; addr < USER_STACK_TOP;
+         addr += PAGE_SIZE) {
+        if (elf_map_user_page_in(addr, new_pd, slot) == NULL) {
+            exit_task(-1);
+            __builtin_unreachable();
+        }
+    }
+
+    /* Set up program break */
+    current->brk_start   = highest_vaddr;
+    current->brk_current = highest_vaddr;
+
+    /* Build argc/argv/envp on user stack (Linux-style ABI layout).
+     *
+     * String area (high addresses, pushed first):
+     *   envp strings, argv strings
+     *
+     * Then the pointer/integer area (low addresses):
+     *   sp+0:  argc
+     *   sp+4:  argv[0] ptr
+     *          ...
+     *          NULL
+     *          envp[0] ptr
+     *          ...
+     *          NULL
+     */
+    uint32_t sp = USER_STACK_TOP;
+
+    int nargs = argc;
+    if (nargs > 64) nargs = 64;
+    int nenv = envc;
+    if (nenv > 64) nenv = 64;
+
+    uint32_t str_addrs[64];
+    uint32_t env_addrs[64];
+
+    /* Push environment strings (high to low) */
+    for (int i = nenv - 1; i >= 0; i--) {
+        size_t len = strlen(envp[i]) + 1;
+        sp -= len;
+        uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
+        uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
+        if (phys == 0) { exit_task(-1); __builtin_unreachable(); }
+        memcpy((void *)(phys + (sp & (PAGE_SIZE - 1))), envp[i], len);
+        env_addrs[i] = sp;
+    }
+
+    /* Push argument strings */
+    for (int i = nargs - 1; i >= 0; i--) {
+        size_t len = strlen(argv[i]) + 1;
+        sp -= len;
+        uint32_t page_vaddr = sp & ~(PAGE_SIZE - 1);
+        uint32_t phys = paging_get_physical_in(new_pd, page_vaddr);
+        if (phys == 0) { exit_task(-1); __builtin_unreachable(); }
+        memcpy((void *)(phys + (sp & (PAGE_SIZE - 1))), argv[i], len);
+        str_addrs[i] = sp;
+    }
+
+    sp &= ~0xFu;  /* 16-byte align before pointer table */
+
+    /* Helper macro to push a 32-bit value onto the user stack */
+    #define PUSH32(val) do { \
+        sp -= 4; \
+        uint32_t _pv = sp & ~(PAGE_SIZE - 1); \
+        uint32_t _ph = paging_get_physical_in(new_pd, _pv); \
+        if (_ph == 0) { exit_task(-1); __builtin_unreachable(); } \
+        *(uint32_t *)(_ph + (sp & (PAGE_SIZE - 1))) = (uint32_t)(val); \
+    } while (0)
+
+    /* Auxiliary vector (auxv) — pushed first so it sits at highest
+     * addresses, right after the envp NULL in memory layout:
+     * [argc, argv..., NULL, envp..., NULL, auxv..., AT_NULL] */
+    PUSH32(0); PUSH32(0);     /* AT_NULL(0) = end of auxv */
+    PUSH32(4096); PUSH32(6);  /* AT_PAGESZ(6) = 4096 */
+
+    /* Push envp NULL terminator */
+    PUSH32(0);
+
+    /* Push envp pointers */
+    for (int i = nenv - 1; i >= 0; i--)
+        PUSH32(env_addrs[i]);
+
+    /* Push argv NULL terminator */
+    PUSH32(0);
+
+    /* Push argv pointers */
+    for (int i = nargs - 1; i >= 0; i--)
+        PUSH32(str_addrs[i]);
+
+    /* Push argc */
+    PUSH32(nargs);
+
+    #undef PUSH32
+
+    /* Close all fd's marked close-on-exec (for now, none — but reset
+     * file offsets isn't needed for execve semantics; fds are inherited) */
+
+    /* Jump to user mode — this never returns */
+    jump_usermode(ehdr.e_entry, sp);
+    __builtin_unreachable();
 }

@@ -1,0 +1,35 @@
+################################################################
+# gui — MOSS Desktop GUI Compositor
+#
+# Produces a statically-linked i386 ELF: "gui"
+# Linked against musl libc for full POSIX support.
+################################################################
+
+CC      = i686-elf-gcc
+
+MUSL    = musl-out
+
+CFLAGS  = -O2 -g -static -std=gnu11 -Wall -Wextra \
+           -Wno-unused-parameter \
+           -isystem $(MUSL)/include \
+           -D__linux__
+
+LDFLAGS = -static -nostdlib \
+           -L$(MUSL)/lib
+
+OUTPUT  = gui
+
+OBJS = gui.o
+
+all: $(OUTPUT)
+
+clean:
+	rm -f $(OBJS) $(OUTPUT)
+
+$(OUTPUT): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $(MUSL)/lib/crt1.o $(MUSL)/lib/crti.o $(OBJS) -lc -lgcc $(MUSL)/lib/crtn.o
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+.PHONY: all clean

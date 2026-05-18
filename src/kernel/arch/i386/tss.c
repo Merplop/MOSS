@@ -36,7 +36,8 @@ struct gdt_ptr {
     uint32_t base;
 } __attribute__((packed));
 
-#define GDT_ENTRIES 6   /* null + kcode + kdata + ucode + udata + tss */
+/* null + kcode + kdata + ucode + udata + tss + 3 TLS entries */
+#define GDT_ENTRIES 9
 
 static struct gdt_entry gdt[GDT_ENTRIES];
 static struct gdt_ptr   gdtp;
@@ -110,6 +111,11 @@ void tss_init(uint32_t kernel_ss, uint32_t kernel_esp0) {
     /* Access byte for TSS: present, ring 0, type = 0x9 (available 32-bit TSS) */
     gdt_set_gate(5, tss_base, tss_limit, 0x89, 0x00);
 
+    /* 6-8 (0x30, 0x38, 0x40): TLS entries — initially null */
+    gdt_set_gate(6, 0, 0, 0, 0);
+    gdt_set_gate(7, 0, 0, 0, 0);
+    gdt_set_gate(8, 0, 0, 0, 0);
+
     /* Set up the GDT pointer and load it */
     gdtp.limit = sizeof(gdt) - 1;
     gdtp.base  = (uint32_t)&gdt;
@@ -128,4 +134,38 @@ void tss_init(uint32_t kernel_ss, uint32_t kernel_esp0) {
 
 void tss_set_kernel_stack(uint32_t esp0) {
     tss.esp0 = esp0;
+}
+
+/*
+ * Set a TLS GDT entry for set_thread_area.
+ * entry_number: 6, 7, or 8 (corresponding to GDT slots 6-8).
+ * base: linear base address of the TLS block.
+ * limit: segment limit (usually 0xFFFFF with 4K granularity for full 4GB).
+ *
+ * Sets up a ring-3 read/write data segment with the given base.
+ * Returns the GDT index used, or -1 on error.
+ */
+int gdt_set_tls(int entry_number, uint32_t base, uint32_t limit) {
+    /* Linux TLS entries are GDT indices 6, 7, 8 */
+    if (entry_number < 6 || entry_number > 8)
+        return -1;
+
+    /* Access: present=1, DPL=3, type=data r/w (0xF2) */
+    /* Granularity: 4K pages, 32-bit (0xCF upper nibble) */
+    if (limit == 0 && base == 0) {
+        /* Mark entry as not present (empty) */
+        gdt_set_gate(entry_number, 0, 0, 0, 0);
+    } else {
+        gdt_set_gate(entry_number, base, limit, 0xF2, 0xCF);
+    }
+
+    return entry_number;
+}
+
+/*
+ * Reload GS with a specific TLS selector.
+ * Called after updating a TLS GDT entry.
+ */
+void gdt_load_gs(uint16_t selector) {
+    asm volatile("movw %0, %%gs" : : "r"(selector));
 }

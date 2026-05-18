@@ -1,20 +1,24 @@
 #include <liballoc.h>
 #include <stdint.h>
+#include <kernel/sync.h>
 
 /* allocate_blocks / free_blocks are defined in kernel via memory_manager.h */
 extern uint32_t *allocate_blocks(uint32_t num_blocks);
 extern void free_blocks(uint32_t *address, uint32_t num_blocks);
 
-/** Lock the memory allocator by disabling interrupts.
- *  This is sufficient for a single-CPU kernel. */
+/* Spinlock protecting the heap allocator.
+ * Uses interrupt save/restore so malloc is safe from interrupt handlers. */
+static spinlock_t heap_lock = SPINLOCK_INIT;
+
+/** Lock the memory allocator. */
 int liballoc_lock() {
-    asm volatile ("cli");
+    spin_lock(&heap_lock);
     return 0;
 }
 
-/** Unlock the memory allocator by re-enabling interrupts. */
+/** Unlock the memory allocator. */
 int liballoc_unlock() {
-    asm volatile ("sti");
+    spin_unlock(&heap_lock);
     return 0;
 }
 

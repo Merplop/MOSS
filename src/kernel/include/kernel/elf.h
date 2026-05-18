@@ -95,6 +95,11 @@ typedef struct {
  * Returns 0 on success (after the program exits), -1 on error. */
 int elf_load_and_exec(uint32_t ino, int user_argc, char **user_argv);
 
+/* Replace the current process image with a new ELF executable.
+ * On success this never returns (jumps to ring 3).
+ * On failure the process is terminated (point of no return). */
+int elf_exec_replace(uint32_t ino, int argc, char **argv, int envc, char **envp);
+
 /* Clean up user-mode page mappings (legacy no-op). */
 void elf_reset_user_pages(void);
 

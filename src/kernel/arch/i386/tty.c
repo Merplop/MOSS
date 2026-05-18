@@ -8,6 +8,38 @@
 #include "framebuffer.h"
 #include "font8x16.h"
 
+/* ---- Serial port (COM1) mirror for debug logging ---- */
+#define COM1_PORT 0x3F8
+
+static int serial_inited = 0;
+
+void serial_init(void) {
+    outb(COM1_PORT + 1, 0x00); /* Disable interrupts */
+    outb(COM1_PORT + 3, 0x80); /* Set DLAB (baud rate divisor) */
+    outb(COM1_PORT + 0, 0x01); /* 115200 baud (divisor 1) */
+    outb(COM1_PORT + 1, 0x00);
+    outb(COM1_PORT + 3, 0x03); /* 8N1 */
+    outb(COM1_PORT + 2, 0xC7); /* Enable FIFO, clear, 14-byte threshold */
+    outb(COM1_PORT + 4, 0x0B); /* IRQs enabled, RTS/DSR set */
+    serial_inited = 1;
+}
+
+static inline void serial_putc(char c) {
+    if (!serial_inited) return;
+    /* Wait for transmit buffer empty */
+    while (!(inb(COM1_PORT + 5) & 0x20))
+        ;
+    outb(COM1_PORT, (uint8_t)c);
+}
+
+static void serial_write(const char *data, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        if (data[i] == '\n')
+            serial_putc('\r');
+        serial_putc(data[i]);
+    }
+}
+
 /* Terminal dimensions in characters (computed from framebuffer size) */
 static size_t TERM_COLS;
 static size_t TERM_ROWS;
@@ -25,6 +57,15 @@ static size_t saved_col = 0;
 
 /* Whether the cursor is visible (for ESC [?25h / ESC [?25l) */
 static bool cursor_visible = true;
+
+/* Cursor drawing state: track where the cursor was last rendered so we can
+   erase it before moving to the new position. */
+static size_t cursor_draw_row = 0;
+static size_t cursor_draw_col = 0;
+static uint32_t cursor_draw_bg = 0;
+static bool cursor_drawn = false;
+
+#define CURSOR_HEIGHT 2   /* underline thickness in pixels */
 
 /*
  * Deferred wrap flag — VT100-style behavior.
@@ -101,14 +142,39 @@ void change_colour(enum vga_colour fg, enum vga_colour bg) {
 	terminal_bg = bg;
 	update_fb_colours();
 	fb_clear(fb_bg);
+	fb_flush();
+	cursor_drawn = false;
+}
+
+static void erase_cursor(void) {
+	if (!cursor_drawn) return;
+	uint32_t x = (uint32_t)cursor_draw_col * FONT_WIDTH;
+	uint32_t y = (uint32_t)cursor_draw_row * FONT_HEIGHT + FONT_HEIGHT - CURSOR_HEIGHT;
+	fb_fill_rect(x, y, FONT_WIDTH, CURSOR_HEIGHT, cursor_draw_bg);
+	cursor_drawn = false;
+}
+
+static void draw_cursor(void) {
+	if (!cursor_visible) return;
+	cursor_draw_row = terminal_row;
+	cursor_draw_col = terminal_column;
+	cursor_draw_bg = fb_bg;
+	uint32_t x = (uint32_t)terminal_column * FONT_WIDTH;
+	uint32_t y = (uint32_t)terminal_row * FONT_HEIGHT + FONT_HEIGHT - CURSOR_HEIGHT;
+	fb_fill_rect(x, y, FONT_WIDTH, CURSOR_HEIGHT, fb_fg);
+	cursor_drawn = true;
 }
 
 void enable_cursor(uint8_t cursor_start, uint8_t cursor_end) {
 	(void)cursor_start;
 	(void)cursor_end;
+	cursor_visible = true;
+	draw_cursor();
 }
 
 void disable_cursor() {
+	erase_cursor();
+	cursor_visible = false;
 }
 
 void update_cursor(int x, int y) {
@@ -122,8 +188,10 @@ void terminal_initialize(void) {
 	TERM_ROWS = info->height / FONT_HEIGHT;
 	terminal_row = 0;
 	terminal_column = 0;
+	cursor_drawn = false;
 	update_fb_colours();
 	fb_clear(fb_bg);
+	fb_flush();
 }
 
 void terminal_setcolour(uint8_t colour) {
@@ -453,6 +521,10 @@ static void terminal_write_char(char c) {
 }
 
 void terminal_write(const char* data, size_t size) {
+	/* Mirror to serial port for debug capture */
+	serial_write(data, size);
+
+	erase_cursor();
 	for (size_t i = 0; i < size && data[i] != '\0'; i++) {
 		if (data[i] == '\r') {
 			terminal_column = 0;
@@ -474,6 +546,8 @@ void terminal_write(const char* data, size_t size) {
 		}
 		terminal_write_char(data[i]);
 	}
+	draw_cursor();
+	fb_flush();
 }
 
 void terminal_writestring(const char* data) {

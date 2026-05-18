@@ -4,7 +4,7 @@
 #include<stdint.h>
 #include<stddef.h>
 
-#define NUM_COMMANDS 26
+#define NUM_COMMANDS 36
 
 /* Saved GRUB memory map (from kernel.c) */
 #define MMAP_BUF_SIZE 512

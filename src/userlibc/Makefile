@@ -15,9 +15,11 @@ SRCS = \
 	src/errno.c \
 	src/fb.c \
 	src/keyboard.c \
+	src/mouse.c \
 	src/math.c \
 	src/time.c \
-	src/stat.c
+	src/stat.c \
+	src/audio.c
 
 OBJS = $(SRCS:.c=.o)
 ASM_OBJS = setjmp.o

@@ -51,6 +51,9 @@ uint8_t get_key(void);
  * Returns 1 if an event was available (copied into *out), 0 if queue empty. */
 int keyboard_poll_event(key_event_t *out);
 
+/* Check if there are any key events pending in the queue (non-destructive). */
+int keyboard_has_events(void);
+
 /* Query the current modifier key state. */
 uint8_t keyboard_get_modifiers(void);
 

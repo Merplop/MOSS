@@ -43,6 +43,19 @@ static inline void outsw(uint16_t port, const void *addr, uint32_t count) {
                   : "memory");
 }
 
+static inline void outl(uint16_t port, uint32_t val) {
+    asm volatile ( "outl %0, %1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    asm volatile ( "inl %1, %0"
+                   : "=a"(ret)
+                   : "Nd"(port)
+                   : "memory");
+    return ret;
+}
+
 static inline void io_wait(void) {
     outb(0x80, 0);
 }

@@ -62,12 +62,14 @@ void *sbrk(intptr_t increment) {
 }
 
 unsigned int sleep(unsigned int seconds) {
-    _syscall1(SYS_USLEEP, seconds * 1000);
+    struct { uint32_t tv_sec; uint32_t tv_nsec; } req = { seconds, 0 };
+    _syscall2(SYS_NANOSLEEP, (uint32_t)&req, 0);
     return 0;
 }
 
-int usleep(unsigned int ms) {
-    return (int)_syscall1(SYS_USLEEP, ms);
+int usleep(unsigned int us) {
+    struct { uint32_t tv_sec; uint32_t tv_nsec; } req = { us / 1000000, (us % 1000000) * 1000 };
+    return (int)_syscall2(SYS_NANOSLEEP, (uint32_t)&req, 0);
 }
 
 unsigned int getticks(void) {
@@ -104,6 +106,12 @@ int dup2(int oldfd, int newfd) {
     return ret;
 }
 
+int pipe(int pipefd[2]) {
+    int32_t ret = _syscall1(SYS_PIPE, (uint32_t)pipefd);
+    if (ret < 0) { errno = EMFILE; return -1; }
+    return 0;
+}
+
 pid_t fork(void) {
     int32_t ret = _syscall0(SYS_FORK);
     if (ret < 0) { errno = EAGAIN; return -1; }
@@ -117,9 +125,55 @@ pid_t waitpid(pid_t pid, int *status, int options) {
     return (pid_t)ret;
 }
 
+int execve(const char *path, char *const argv[], char *const envp[]) {
+    (void)envp; /* environment not supported yet */
+    int32_t ret = _syscall3(SYS_EXECVE, (uint32_t)path, (uint32_t)argv, (uint32_t)envp);
+    /* execve only returns on error */
+    errno = ENOENT;
+    return (int)ret;
+}
+
+int execv(const char *path, char *const argv[]) {
+    return execve(path, argv, (char *const *)0);
+}
+
 int execvp(const char *file, char *const argv[]) {
-    (void)file; (void)argv;
-    errno = ENOSYS;
+    if (!file) { errno = ENOENT; return -1; }
+
+    /* If file contains a '/', treat as a direct path */
+    for (const char *p = file; *p; p++) {
+        if (*p == '/') {
+            return execve(file, argv, (char *const *)0);
+        }
+    }
+
+    /* Search PATH-like locations */
+    static const char *search_dirs[] = { "/bin/", "/usr/bin/", "/" , NULL };
+    char path_buf[256];
+
+    for (int i = 0; search_dirs[i]; i++) {
+        /* Build candidate path */
+        const char *dir = search_dirs[i];
+        size_t dlen = 0;
+        while (dir[dlen]) dlen++;
+        size_t flen = 0;
+        while (file[flen]) flen++;
+        if (dlen + flen + 1 > sizeof(path_buf))
+            continue;
+
+        for (size_t j = 0; j < dlen; j++) path_buf[j] = dir[j];
+        for (size_t j = 0; j < flen; j++) path_buf[dlen + j] = file[j];
+        path_buf[dlen + flen] = '\0';
+
+        /* Try this path — if the file exists, execve it */
+        if (access(path_buf, F_OK) == 0) {
+            execve(path_buf, argv, (char *const *)0);
+            /* If execve returned, there was an error loading it */
+            return -1;
+        }
+    }
+
+    errno = ENOENT;
     return -1;
 }
 
@@ -133,4 +187,17 @@ int access(const char *path, int mode) {
     ret = (int)_syscall2(SYS_STAT, (uint32_t)path, (uint32_t)tmp_stat);
     if (ret < 0) { errno = ENOENT; return -1; }
     return 0;
+}
+
+int isatty(int fd) {
+    return (int)_syscall1(SYS_ISATTY, (uint32_t)fd);
+}
+
+pid_t getppid(void) {
+    return (pid_t)_syscall0(SYS_GETPPID);
+}
+
+int mkdir(const char *path, unsigned int mode) {
+    (void)mode;
+    return (int)_syscall1(SYS_MKDIR, (uint32_t)path);
 }

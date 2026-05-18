@@ -34,10 +34,23 @@ int chdir(const char *path);
 int unlink(const char *path);
 int dup(int oldfd);
 int dup2(int oldfd, int newfd);
+int pipe(int pipefd[2]);
 pid_t fork(void);
 pid_t waitpid(pid_t pid, int *status, int options);
 int access(const char *path, int mode);
+int isatty(int fd);
+pid_t getppid(void);
 int execvp(const char *file, char *const argv[]);
+int execve(const char *path, char *const argv[], char *const envp[]);
+int execv(const char *path, char *const argv[]);
+int execvpe(const char *file, char *const argv[], char *const envp[]);
+int mkdir(const char *path, unsigned int mode);
+
+/* Stub identity functions (MOSS is single-user, always root) */
+static inline unsigned int getuid(void)  { return 0; }
+static inline unsigned int geteuid(void) { return 0; }
+static inline unsigned int getgid(void)  { return 0; }
+static inline unsigned int getegid(void) { return 0; }
 
 /* access() mode flags */
 #define F_OK 0
