@@ -54,6 +54,9 @@ int keyboard_poll_event(key_event_t *out);
 /* Check if there are any key events pending in the queue (non-destructive). */
 int keyboard_has_events(void);
 
+/* Check if there's a key-press event with ASCII (for TTY readability). */
+int keyboard_has_ascii_press(void);
+
 /* Query the current modifier key state. */
 uint8_t keyboard_get_modifiers(void);
 

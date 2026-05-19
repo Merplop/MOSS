@@ -539,6 +539,9 @@ void terminal_write(const char* data, size_t size) {
 				             fb_fg, fb_bg);
 			}
 			continue;
+		} else if (data[i] == '\a') {
+			/* BEL — ignore (no audible bell) */
+			continue;
 		} else if (data[i] == 0x09) {
 			for (int t = 0; t < 5; t++)
 				terminal_putchar(' ');

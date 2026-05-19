@@ -64,8 +64,8 @@ static uint32_t slot_paddrs[MAX_PAGE_SLOTS][MAX_USER_PAGES];
 static int      slot_count[MAX_PAGE_SLOTS];
 static int      slot_in_use[MAX_PAGE_SLOTS];
 
-/* User stack: 1 MiB (256 pages), grows downward from USER_STACK_TOP */
-#define USER_STACK_PAGES 256
+/* User stack: 2 MiB (512 pages), grows downward from USER_STACK_TOP */
+#define USER_STACK_PAGES 512
 #define USER_STACK_TOP   0xBFFFF000u
 #define USER_STACK_BASE  (USER_STACK_TOP - USER_STACK_PAGES * PAGE_SIZE)
 

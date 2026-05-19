@@ -219,6 +219,8 @@ void remove_task(task_t *task_to_remove) {
 /*
  * Pick the next TASK_READY task in round-robin order and perform a
  * context switch if the selected task differs from the current one.
+ *
+ * The idle task (pid 0) is only chosen if no other task is ready.
  */
 void schedule(void) {
     if (sched_list_head == NULL)
@@ -230,55 +232,30 @@ void schedule(void) {
     if (current_node != NULL && current_node->t.state == TASK_RUNNING)
         current_node->t.state = TASK_READY;
 
-    /* Walk the circular list starting from the node after current */
+    /* Walk the circular list starting from the node after current.
+     * Skip the idle task (pid 0) on the first pass; only fall back to
+     * it if nothing else is runnable. */
     sched_list_t *start = (current_node != NULL) ? current_node->next
                                                   : sched_list_head;
     sched_list_t *candidate = start;
+    sched_list_t *idle_node = NULL;
     do {
         if (candidate->t.state == TASK_READY) {
-            current_node = candidate;
-            current_node->t.state = TASK_RUNNING;
-            current_node->t.counter = current_node->t.priority;
-
-            /* Perform actual CPU context switch */
-            if (prev_node != NULL && prev_node != current_node) {
-                /* Save current task's cwd into its task struct,
-                 * and restore new task's cwd into globals. */
-                extern uint32_t cwd_ino;
-                extern char cwd_path[256];
-                prev_node->t.cwd_ino = cwd_ino;
-                memcpy(prev_node->t.cwd_path, cwd_path, 256);
-                cwd_ino = current_node->t.cwd_ino;
-                memcpy(cwd_path, current_node->t.cwd_path, 256);
-
-                /* Point TSS.esp0 at the top of the new task's kernel stack
-                 * so interrupts from ring 3 land on the right stack. */
-                if (current_node->t.stack != NULL)
-                    tss_set_kernel_stack((uint32_t)current_node->t.stack
-                                         + TASK_STACK_SIZE);
-
-                /* Switch to the new task's page directory. */
-                uint32_t *new_pd = current_node->t.page_dir;
-                if (!new_pd)
-                    new_pd = paging_get_page_dir();
-                paging_switch_directory(new_pd);
-
-                /* Restore new task's TLS GDT entry so %gs works */
-                if (current_node->t.tls_gs) {
-                    extern int gdt_set_tls(int entry_number,
-                                           uint32_t base, uint32_t limit);
-                    gdt_set_tls(current_node->t.tls_entry,
-                                current_node->t.tls_base,
-                                current_node->t.tls_limit);
-                }
-
-                switch_context(&prev_node->t.esp, current_node->t.esp);
+            if (candidate->t.pid == 0) {
+                idle_node = candidate; /* remember but skip */
+            } else {
+                current_node = candidate;
+                goto found;
             }
-
-            return;
         }
         candidate = candidate->next;
     } while (candidate != start);
+
+    /* No non-idle task found — use idle if available */
+    if (idle_node) {
+        current_node = idle_node;
+        goto found;
+    }
 
     /* No ready task found — if current is still runnable, keep it */
     if (current_node != NULL &&
@@ -286,6 +263,51 @@ void schedule(void) {
          current_node->t.state == TASK_RUNNING)) {
         current_node->t.state = TASK_RUNNING;
         current_node->t.counter = current_node->t.priority;
+    }
+    return;
+
+found:
+    current_node->t.state = TASK_RUNNING;
+    current_node->t.counter = current_node->t.priority;
+
+    /* Perform actual CPU context switch */
+    if (prev_node != NULL && prev_node != current_node) {
+        /* Save current task's cwd into its task struct,
+         * and restore new task's cwd into globals. */
+        extern uint32_t cwd_ino;
+        extern char cwd_path[256];
+        prev_node->t.cwd_ino = cwd_ino;
+        memcpy(prev_node->t.cwd_path, cwd_path, 256);
+        cwd_ino = current_node->t.cwd_ino;
+        memcpy(cwd_path, current_node->t.cwd_path, 256);
+
+        /* Point TSS.esp0 at the top of the new task's kernel stack
+         * so interrupts from ring 3 land on the right stack. */
+        if (current_node->t.stack != NULL)
+            tss_set_kernel_stack((uint32_t)current_node->t.stack
+                                 + TASK_STACK_SIZE);
+
+        /* Switch to the new task's page directory — but skip the
+         * expensive CR3 write if both tasks share the same directory. */
+        uint32_t *new_pd = current_node->t.page_dir;
+        if (!new_pd)
+            new_pd = paging_get_page_dir();
+        uint32_t *old_pd = prev_node->t.page_dir;
+        if (!old_pd)
+            old_pd = paging_get_page_dir();
+        if (new_pd != old_pd)
+            paging_switch_directory(new_pd);
+
+        /* Restore new task's TLS GDT entry so %gs works */
+        if (current_node->t.tls_gs) {
+            extern int gdt_set_tls(int entry_number,
+                                   uint32_t base, uint32_t limit);
+            gdt_set_tls(current_node->t.tls_entry,
+                        current_node->t.tls_base,
+                        current_node->t.tls_limit);
+        }
+
+        switch_context(&prev_node->t.esp, current_node->t.esp);
     }
 }
 

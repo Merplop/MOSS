@@ -26,36 +26,48 @@ ext2 filesystem ready
 MOSS login: root
 Password: 
 Welcome, root!
-root@/>nbash
-I have no name!@moss:/$ neofeth ch
-neofetch
-[32m    .    .   .         .  .[0m        [1m[32mroot[0m@[1m[32mmoss[0m
-[32m          .  . ...  .   .     .[0m    ---------
-[32m          .   ..-*#+:.  .    .  .....[0m  [1m[32mOS[0m: MOSS 0.1.0
-[32m .  .  .   .:=*#######*-. . .      .[0m  [1m[32mHost[0m: MOSS Virtual Machine
-[32m ..  .   :+#######*#######=.  .[0m    [1m[32mKernel[0m: MOSS 0.1.0 i686
-[32m     .:*#######***=***#######=.  .....[0m  [1m[32mUptime[0m: unknown
-[32m   ..:*#####*****+++*****#####+ .  ..[0m  [1m[32mShell[0m: bash
-[32m.  ..:*###==**+======++**-+###+     ..[0m  [1m[32mTerminal[0m: MOSS Console
-[32m  . .:*###***===+##*+==+**####+     .[0m  [1m[32mCPU[0m: i686
-[32m     :*###***==+#=:**==+**####+     .[0m  [1m[32mMemory[0m: ?
-[32m     :*###***===*###+==+**####+[0m
-[32m..   :*###++*+========+**=*###+.. ....[0m  [40m   [41m   [42m   [43m   [44m   [45m   [46m   [47m   [0m
-[32m     :*####*****++=+******####+  . ..[0m
-[32m.. ...=#######********#######*: ...[0m
-[32m  . .   .=#######*+*######*:.        .[0m
-[32m. .. .     .-*#########+: .  . ..  .[0m
-[32m . . .. .    ..:+###=:.  .  .       ..[0m
-[32m .      .      . .       .   .   .   .[0m
-[32m          ...   ..     ..  .        .[0m
-
-I have no name!@moss:/$ ls -al
-ls -al
+root@/>
+root@/>
+root@/>root@/>ls
+a.out  bin  blah  boot	dev  doom1.wad	etc  home  id1	lib  lost+found  media	mnt  opt  proc	root  sbin  srv  test.c  test_fork  tmp  usr
+root@/>root@/>ls -al
+
+Paging enabled: 0x0000000007FE0000 bytes identity-mapped
+[pci] Found 6 device(s):
+  00:00.0  8086:1237  class 06:00  IRQ 0
+  00:01.0  8086:7000  class 06:01  IRQ 0
+  00:01.1  8086:7010  class 01:01  IRQ 0
+  00:01.3  8086:7113  class 06:80  IRQ 9
+  00:02.0  1234:1111  class 03:00  IRQ 0
+  00:03.0  10ec:8139  class 02:00  IRQ 11
+[rtl8139] Found at PCI 00:03.0, IRQ 11
+[rtl8139] I/O base: 0xc000
+[rtl8139] MAC: 52:54:00:12:34:56
+[rtl8139] Initialized successfully
+[kernel] RTL8139 NIC ready
+[net] Stack initialized: 10.0.2.15
+[sb16] DSP version 4.05 detected
+[sb16] init complete, sb16_found=1
+[kernel] Sound Blaster 16 initialized
+ATA drive 0: 256 MiB
+[ext2] 262144 blocks, 32 groups, 8192 blks/grp, 2048 inodes/grp
+ext2 mounted from ATA drive 0 (raw)
+------------------------------
+MOSS Kernel - Version Beta 2.0
+------------------------------
+ext2 filesystem ready
+
+MOSS login: root
+Password: 
+Welcome, root!
+root@/>bash
+[01;32mroot@moss[00m:[01;34m/[00m# root      
+[01;32mroot@moss[00m:[01;34m/[00m#                                                                                                                                                                                                                                   [01;32mroot@moss[00m:[01;34m/[00m# ls -al
 total 4260
 drwxr-xr-x 20 root root    1024 May 18  2026 [0m[01;34m.[0m
 drwxr-xr-x 20 root root    1024 May 18  2026 [01;34m..[0m
 -rwxrwxrwx  1 root root   26963 Jan  1 00:00 [01;32ma.out[0m
-drwxrwxrwx  2 root root    1024 May 18  2026 [34;42mbin[0m
+drwxrwxrwx  2 root root    1024 May 19  2026 [34;42mbin[0m
 drwxrwxrwx  3 root root    1024 Jan  1 00:00 [34;42mblah[0m
 drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mboot[0m
 drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42mdev[0m
@@ -76,4 +88,74 @@ drwxrwxrwx  2 root root    1024 Jan  1 00:00 [34;42msrv[0m
 -rwxr-xr-x  1 root root   86168 Apr 19  2026 [01;32mtest_fork[0m
 drwxrwxrwt  2 root root    1024 Jan  1 00:00 [30;42mtmp[0m
 drwxrwxrwx  4 root root    1024 Apr 29  2026 [34;42musr[0m
-I have no name!@moss:/$ 
+[01;32mroot@moss[00m:[01;34m/[00m#                                                                                                                                                                                                                                   [01;32mroot@moss[00m:[01;34m/[00m# neofetch
+[32m                                      [0m  [1m[32mroot[0m@[1m[32mmoss[0m
+[32m                                      [0m  ----------
+[32m                -*#+:                 [0m  [1m[32mOS[0m: MOSS 0.1.0
+[32m            :=*#######*-              [0m  [1m[32mHost[0m: MOSS Virtual Machine
+[32m         :+#######*#######=           [0m  [1m[32mKernel[0m: MOSS 0.1.0 i686
+[32m     .:*#######***=***#######=        [0m  [1m[32mUptime[0m: unknown
+[32m     :*#####*****+++*****#####+       [0m  [1m[32mShell[0m: bash
+[32m     :*###==**+======++**-+###+       [0m  [1m[32mTerminal[0m: MOSS Console
+[32m     :*###***===+##*+==+**####+       [0m  [1m[32mCPU[0m: i686
+[32m     :*###***==+#=:**==+**####+       [0m  [1m[32mMemory[0m: ?
+[32m     :*###***===*###+==+**####+[0m
+[32m     :*###++*+========+**=*###+[0m  [40m   [41m   [42m   [43m   [44m   [45m   [46m   [47m   [0m
+[32m     :*####*****++=+******####+[0m
+[32m      =#######********#######*:[0m
+[32m         =#######*+*######*:         [0m
+[32m            -*#########+:            [0m
+[32m               :+###=:               [0m
+[32m                                     [0m
+[32m                                     [0m
+[01;32mroot@moss[00m:[01;34m/[00m#                                                                                                                                                                                                                                   [01;32mroot@moss[00m:[01;34m/[00m# 
+[01;32mroot@moss[00m:[01;34m/[00m# exit
+exit
+root@/>root@/>browse browse google.com
+Loading http://google.com...
+[2J[H301 Moved
+301 Moved
+The document has moved here. 
+ http://google.com                                                                                                                                                                                                                              [q]uit [b]ack [j/k]scroll [g]o [number]link> [2J[Hroot@/>berrowse info.cern.ch
+Loading http://info.cern.ch...
+[2J[Hhttp://info.cern.ch
+http://info.cern.ch - home of the first website
+From here you can:
+ * [1]Browse the first website
+ * [2]Browse the first website using the line-mode browser simulator
+ * [3]Learn about the birth of the web
+ * [4]Learn about CERN, the physics laboratory where the web was born
+ http://info.cern.ch                                                                                                                                                                                                                            [q]uit [b]ack [j/k]scroll [g]o [number]link> 1
+Following link [1]: http://info.cern.ch/hypertext/WWW/TheProject.html
+Loading...
+[2J[HThe World Wide Web project
+World Wide Web
+The WorldWideWeb (W3) is a wide-areahypermediainformation retrieval initiative aiming to give universal access to a large universe of documents.
+Everything there is online about W3 is linked directly or indirectly to this document, including an executive summaryof the project, Mailing lists, Policy, November's W3 news, Frequently Asked Questions. What's out there?Pointers to the wor
+ld's online information,subjects, W3 servers, etc. Helpon the browser you are using Software ProductsA list of W3 project components and their current state. (e.g. Line Mode,X11 Viola, NeXTStep, Servers, Tools,Mail robot,Library) TechnicalD
+etails of protocols, formats, program internals etc BibliographyPaper documentation on W3 and references. PeopleA list of some people involved in the project. HistoryA summary of the history of the project. How can I help? If you would like
+ to support the web.. Getting codeGetting the code byanonymous FTP, etc.
+ http://info.cern.ch/hypertext/WWW/TheProject.html                                                                                                                                                                                              [q]uit [b]ack [j/k]scroll [g]o [number]link> [2J[Hroot@/>help
+List of internal kernel commands
+fetch              Display kernel information
+ls                 List contents of current directory
+reb                Reboot computer
+hlt                Halt CPU
+shutdown           Shutdown computer
+colour <fg> <bg>   Change terminal colour
+sleep <s>          Sleep for s seconds
+help               Display this
+clear              Clear screen
+ps                 View currently running processes
+touch <name>       Create a file in working directory
+mkdir <name>       Create a directory in working directory
+cd <directory>     Change working directory
+mv <file> <dir>    Move a file/directory into another directory
+tex <filename>     Edit a MOSS-formatted data file
+rm <filename>      Remove a file or directory
+mv <filename>      Move a file or directory
+mmap               Display memory map
+disks              List detected ATA drives
+mkfs <n>           Format drive n with MOSS ext2
+mount <n>          Mount ext2 filesystem from drive n
+root@/>bash

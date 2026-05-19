@@ -96,6 +96,11 @@ static void pipe_maybe_free(int idx) {
 #define TTY_LINE_SIZE   1024     /* max line editing buffer */
 #define TTY_COOKED_SIZE 4096     /* completed-input ring buffer */
 
+/* Terminal mode flags (matching Linux c_lflag bits) */
+#define TTYF_ICANON  0x0002
+#define TTYF_ECHO    0x0008
+#define TTYF_ISIG    0x0001
+
 static struct {
     /* Editing buffer: line currently being composed */
     char edit_buf[TTY_LINE_SIZE];
@@ -108,7 +113,19 @@ static struct {
     uint32_t cooked_count;
 
     int eof_pending;  /* Ctrl+D on empty line → next read returns 0 */
-} tty_ldisc;
+
+    /* Terminal mode settings */
+    uint32_t c_iflag;
+    uint32_t c_oflag;
+    uint32_t c_cflag;
+    uint32_t c_lflag;   /* ICANON, ECHO, ISIG etc. */
+    uint8_t  c_cc[19];  /* control characters */
+} tty_ldisc = {
+    .c_lflag = 0x000B,  /* ICANON | ECHO | ISIG */
+    .c_iflag = 0x0002,  /* ICRNL */
+    .c_oflag = 0x0001,  /* OPOST */
+    .c_cflag = 0x00BF,  /* CS8 | B38400 | CREAD */
+};
 
 /* Push bytes from the edit buffer into the cooked ring. */
 static void tty_flush_edit(void) {
@@ -463,6 +480,7 @@ static int32_t sys_write(struct isr_regs *regs) {
                 task_t *me = get_current_task();
                 if (me) {
                     me->state = TASK_INTERRUPTIBLE;
+                    asm volatile("sti; hlt");
                     schedule();
                 } else {
                     asm volatile("sti; hlt");
@@ -498,9 +516,26 @@ static int32_t sys_read(struct isr_regs *regs) {
     if (!(f->flags & FD_FLAG_USED) || !(f->flags & FD_FLAG_READABLE))
         return -1;
 
-    /* stdin → line-buffered TTY input */
+    /* stdin → TTY input */
     if (f->type == FD_TYPE_STDIN || f->type == FD_TYPE_DEVTTY) {
         extern uint8_t get_key(void);
+
+        /* ---- Raw (non-canonical) mode ---- */
+        if (!(tty_ldisc.c_lflag & TTYF_ICANON)) {
+            /* Return characters immediately, no line editing */
+            uint32_t nread = 0;
+            while (nread < count) {
+                uint8_t ch = get_key();
+                if (tty_ldisc.c_lflag & TTYF_ECHO)
+                    terminal_write((const char *)&ch, 1);
+                buf[nread++] = (char)ch;
+                /* In raw mode with VMIN=1, return after first char */
+                break;
+            }
+            return (int32_t)nread;
+        }
+
+        /* ---- Canonical (cooked) mode ---- */
 
         /* If cooked data is already available, return it immediately */
         if (tty_ldisc.cooked_count > 0)
@@ -595,6 +630,7 @@ static int32_t sys_read(struct isr_regs *regs) {
             task_t *me = get_current_task();
             if (me) {
                 me->state = TASK_INTERRUPTIBLE;
+                asm volatile("sti; hlt");
                 schedule();
             } else {
                 asm volatile("sti; hlt");
@@ -1075,6 +1111,7 @@ static int32_t sys_usleep(struct isr_regs *regs) {
         task_t *me = get_current_task();
         if (me) {
             me->state = TASK_INTERRUPTIBLE;
+            asm volatile("sti; hlt");
             schedule();
         } else {
             asm volatile("sti; hlt");
@@ -2722,22 +2759,40 @@ static int32_t sys_ioctl(struct isr_regs *regs) {
         } *kt = (struct kernel_termios *)arg;
         if (!kt) return -14; /* -EFAULT */
         memset(kt, 0, sizeof(*kt));
-        /* Report canonical mode with echo */
-        kt->c_lflag = 0x000B; /* ICANON|ECHO|ISIG */
-        kt->c_iflag = 0x0002; /* ICRNL */
-        kt->c_oflag = 0x0001; /* OPOST */
-        kt->c_cflag = 0x00BF; /* CS8 | B38400 | CREAD */
-        kt->c_cc[6]  = 1;    /* VMIN */
-        kt->c_cc[7]  = 0;    /* VTIME */
-        kt->c_cc[4]  = 4;    /* VEOF = Ctrl-D */
+        kt->c_lflag = tty_ldisc.c_lflag;
+        kt->c_iflag = tty_ldisc.c_iflag;
+        kt->c_oflag = tty_ldisc.c_oflag;
+        kt->c_cflag = tty_ldisc.c_cflag;
+        memcpy(kt->c_cc, tty_ldisc.c_cc, 19);
+        kt->c_cc[6]  = tty_ldisc.c_cc[6] ? tty_ldisc.c_cc[6] : 1; /* VMIN */
+        kt->c_cc[7]  = tty_ldisc.c_cc[7];  /* VTIME */
+        kt->c_cc[4]  = tty_ldisc.c_cc[4] ? tty_ldisc.c_cc[4] : 4; /* VEOF */
         return 0;
     }
     case TCSETS:   /* 0x5402 */
     case TCSETSW:  /* 0x5403 */
-    case TCSETSF:  /* 0x5404 */
+    case TCSETSF: { /* 0x5404 */
         if (!is_tty) return -25;
-        /* Accept but ignore — we don't change TTY modes yet */
+        struct kernel_termios {
+            uint32_t c_iflag;
+            uint32_t c_oflag;
+            uint32_t c_cflag;
+            uint32_t c_lflag;
+            uint8_t  c_line;
+            uint8_t  c_cc[19];
+        } *kt = (struct kernel_termios *)arg;
+        if (!kt) return -14;
+        tty_ldisc.c_iflag = kt->c_iflag;
+        tty_ldisc.c_oflag = kt->c_oflag;
+        tty_ldisc.c_cflag = kt->c_cflag;
+        tty_ldisc.c_lflag = kt->c_lflag;
+        memcpy(tty_ldisc.c_cc, kt->c_cc, 19);
+        /* If switching to raw mode, flush any pending edit buffer */
+        if (!(kt->c_lflag & TTYF_ICANON)) {
+            tty_ldisc.edit_len = 0;
+        }
         return 0;
+    }
 
     case TIOCGWINSZ: { /* 0x5413 */
         if (!is_tty) return -25;
@@ -2841,11 +2896,78 @@ static int32_t sys_writev(struct isr_regs *regs) {
     return total;
 }
 
-/* SYS_READV (145): read into scattered buffers (stub using sys_read logic). */
+/* SYS_READV (145): read into scattered buffers.
+ *   ebx = fd, ecx = iov array, edx = iovcnt
+ *   Returns: total bytes read or -errno. */
 static int32_t sys_readv(struct isr_regs *regs) {
-    /* For now just handle it simply */
-    (void)regs;
-    return -38; /* -ENOSYS */
+    uint32_t fd     = regs->ebx;
+    struct { uint32_t base; uint32_t len; } *iov =
+        (void *)regs->ecx;
+    int32_t iovcnt = (int32_t)regs->edx;
+
+    if (!iov || iovcnt <= 0)
+        return -22; /* -EINVAL */
+
+    task_t *t = get_current_task();
+    if (!t || fd >= MAX_OPEN_FILES)
+        return -9; /* -EBADF */
+
+    fd_entry_t *f = &t->fd_table[fd];
+    if (!(f->flags & FD_FLAG_USED) || !(f->flags & FD_FLAG_READABLE))
+        return -9; /* -EBADF */
+
+    int32_t total = 0;
+    for (int32_t i = 0; i < iovcnt; i++) {
+        char *buf = (char *)iov[i].base;
+        uint32_t count = iov[i].len;
+        if (!buf || count == 0)
+            continue;
+
+        /* Use the same read logic as sys_read for each iov entry */
+        if (f->type == FD_TYPE_FILE) {
+            int n = ext2_read_file(f->ino, buf, f->offset, count);
+            if (n > 0) {
+                f->offset += (uint32_t)n;
+                total += n;
+            }
+            if (n < (int)count)
+                break; /* short read or EOF */
+        } else if (f->type == FD_TYPE_DEVNULL) {
+            break; /* EOF */
+        } else if (f->type == FD_TYPE_PIPE) {
+            pipe_t *p = &pipe_table[f->pipe_idx];
+            while (p->count == 0) {
+                if (p->writers == 0)
+                    return total > 0 ? total : 0; /* EOF */
+                t->state = TASK_INTERRUPTIBLE;
+                asm volatile("sti; hlt");
+                schedule();
+            }
+            uint32_t avail = p->count;
+            uint32_t to_read = (count < avail) ? count : avail;
+            for (uint32_t j = 0; j < to_read; j++) {
+                buf[j] = (char)p->buf[p->read_pos];
+                p->read_pos = (p->read_pos + 1) % PIPE_BUF_SIZE;
+            }
+            p->count -= to_read;
+            total += (int32_t)to_read;
+            if (to_read < count)
+                break; /* short read */
+        } else if (f->type == FD_TYPE_STDIN || f->type == FD_TYPE_DEVTTY) {
+            /* For TTY, do a single read into the first buffer and return */
+            struct isr_regs fake = *regs;
+            fake.ebx = fd;
+            fake.ecx = (uint32_t)buf;
+            fake.edx = count;
+            int32_t n = sys_read(&fake);
+            if (n > 0)
+                total += n;
+            break; /* TTY reads are line-at-a-time */
+        } else {
+            break;
+        }
+    }
+    return total;
 }
 
 /* SYS_ACCESS (33): check file access permissions.
@@ -3001,6 +3123,7 @@ static int32_t sys_nanosleep(struct isr_regs *regs) {
         task_t *me = get_current_task();
         if (me) {
             me->state = TASK_INTERRUPTIBLE;
+            asm volatile("sti; hlt");
             schedule();
         } else {
             asm volatile("sti; hlt");
@@ -3427,6 +3550,15 @@ static int32_t sys_gettid(struct isr_regs *regs) {
     return sys_getpid(regs);
 }
 
+/* SYS_SET_TID_ADDRESS (258): set pointer for clear_child_tid.
+ *   ebx = tidptr
+ *   Returns: caller's TID (PID for us). */
+static int32_t sys_set_tid_address(struct isr_regs *regs) {
+    (void)regs; /* We ignore the pointer — no thread cleanup needed */
+    task_t *t = get_current_task();
+    return t ? (int32_t)t->pid : 1;
+}
+
 /* SYS_CLONE (120): create child process/thread.
  *   For now, only support fork-like clone (flags = SIGCHLD).
  *   ebx = flags, ecx = child_stack (0 = copy parent), edx = ptid, esi = tls, edi = ctid
@@ -3775,6 +3907,7 @@ static int32_t sys_poll(struct isr_regs *regs) {
         if (tmo != 0xFFFFFFFFu && elapsed >= tmo)
             return 0;
         t->state = TASK_INTERRUPTIBLE;
+        asm volatile("sti; hlt");
         schedule();
         if (t->sig_pending & ~t->sig_blocked)
             return -4; /* -EINTR */
@@ -3796,14 +3929,13 @@ static int fd_readable(task_t *t, int fd) {
     switch (f->type) {
     case FD_TYPE_STDIN:
     case FD_TYPE_DEVTTY:
-        /* Readable if cooked data available, EOF pending, or raw
-         * keyboard events queued (so select() doesn't block when
-         * no one has called read() to cook them yet). */
+        /* Readable if cooked data available, EOF pending, or
+         * an actual key-press with ASCII is queued. */
         {
-            extern int keyboard_has_events(void);
+            extern int keyboard_has_ascii_press(void);
             return (tty_ldisc.cooked_count > 0 ||
                     tty_ldisc.eof_pending ||
-                    keyboard_has_events());
+                    keyboard_has_ascii_press());
         }
     case FD_TYPE_PIPE: {
         pipe_t *p = &pipe_table[f->pipe_idx];
@@ -3900,13 +4032,28 @@ static int32_t sys_select(struct isr_regs *regs) {
     task_t *t = get_current_task();
     if (!t) return -1;
 
+    int nfds = a->nfds;
+    int nwords = (nfds + 31) / 32;
+    uint32_t saved_read[nwords], saved_write[nwords], saved_except[nwords];
+    if (a->readfds)   memcpy(saved_read,   a->readfds,   nwords * 4);
+    else              memset(saved_read,   0, nwords * 4);
+    if (a->writefds)  memcpy(saved_write,  a->writefds,  nwords * 4);
+    else              memset(saved_write,  0, nwords * 4);
+    if (a->exceptfds) memcpy(saved_except, a->exceptfds, nwords * 4);
+    else              memset(saved_except, 0, nwords * 4);
+
     uint32_t timeout_ms = 0xFFFFFFFFu; /* infinite if no timeout */
     if (tv)
         timeout_ms = tv->tv_sec * 1000 + tv->tv_usec / 1000;
 
     uint32_t start = timer_get_ticks();
     while (1) {
-        int ready = do_select_poll(t, a->nfds, a->readfds, a->writefds,
+        /* Restore original sets before each poll (do_select_poll clears them) */
+        if (a->readfds)   memcpy(a->readfds,   saved_read,   nwords * 4);
+        if (a->writefds)  memcpy(a->writefds,  saved_write,  nwords * 4);
+        if (a->exceptfds) memcpy(a->exceptfds, saved_except, nwords * 4);
+
+        int ready = do_select_poll(t, nfds, a->readfds, a->writefds,
                                    a->exceptfds);
         if (ready > 0) {
             if (tv) { tv->tv_sec = 0; tv->tv_usec = 0; }
@@ -3918,8 +4065,9 @@ static int32_t sys_select(struct isr_regs *regs) {
             if (tv) { tv->tv_sec = 0; tv->tv_usec = 0; }
             return 0;
         }
-        /* Yield and try again */
+        /* Yield: enable interrupts so keyboard/timer IRQs can fire */
         t->state = TASK_INTERRUPTIBLE;
+        asm volatile("sti; hlt");
         schedule();
         /* Check for pending signals */
         if (t->sig_pending & ~t->sig_blocked)
@@ -3938,12 +4086,26 @@ static int32_t sys_newselect(struct isr_regs *regs) {
     task_t *t = get_current_task();
     if (!t) return -1;
 
+    int nwords = (nfds + 31) / 32;
+    uint32_t saved_read[nwords], saved_write[nwords], saved_except[nwords];
+    if (readfds)   memcpy(saved_read,   readfds,   nwords * 4);
+    else           memset(saved_read,   0, nwords * 4);
+    if (writefds)  memcpy(saved_write,  writefds,  nwords * 4);
+    else           memset(saved_write,  0, nwords * 4);
+    if (exceptfds) memcpy(saved_except, exceptfds, nwords * 4);
+    else           memset(saved_except, 0, nwords * 4);
+
     uint32_t timeout_ms = 0xFFFFFFFFu;
     if (tv)
         timeout_ms = tv->tv_sec * 1000 + tv->tv_usec / 1000;
 
     uint32_t start = timer_get_ticks();
     while (1) {
+        /* Restore original sets before each poll */
+        if (readfds)   memcpy(readfds,   saved_read,   nwords * 4);
+        if (writefds)  memcpy(writefds,  saved_write,  nwords * 4);
+        if (exceptfds) memcpy(exceptfds, saved_except, nwords * 4);
+
         int ready = do_select_poll(t, nfds, readfds, writefds, exceptfds);
         if (ready > 0) {
             if (tv) { tv->tv_sec = 0; tv->tv_usec = 0; }
@@ -3955,6 +4117,7 @@ static int32_t sys_newselect(struct isr_regs *regs) {
             return 0;
         }
         t->state = TASK_INTERRUPTIBLE;
+        asm volatile("sti; hlt");
         schedule();
         if (t->sig_pending & ~t->sig_blocked)
             return -4;
@@ -3971,12 +4134,26 @@ static int32_t sys_pselect6(struct isr_regs *regs) {
     task_t *t = get_current_task();
     if (!t) return -1;
 
+    int nwords = (nfds + 31) / 32;
+    uint32_t saved_read[nwords], saved_write[nwords], saved_except[nwords];
+    if (readfds)   memcpy(saved_read,   readfds,   nwords * 4);
+    else           memset(saved_read,   0, nwords * 4);
+    if (writefds)  memcpy(saved_write,  writefds,  nwords * 4);
+    else           memset(saved_write,  0, nwords * 4);
+    if (exceptfds) memcpy(saved_except, exceptfds, nwords * 4);
+    else           memset(saved_except, 0, nwords * 4);
+
     uint32_t timeout_ms = 0xFFFFFFFFu;
     if (ts)
         timeout_ms = ts->tv_sec * 1000 + ts->tv_nsec / 1000000;
 
     uint32_t start = timer_get_ticks();
     while (1) {
+        /* Restore original sets before each poll */
+        if (readfds)   memcpy(readfds,   saved_read,   nwords * 4);
+        if (writefds)  memcpy(writefds,  saved_write,  nwords * 4);
+        if (exceptfds) memcpy(exceptfds, saved_except, nwords * 4);
+
         int ready = do_select_poll(t, nfds, readfds, writefds, exceptfds);
         if (ready > 0)
             return ready;
@@ -3984,6 +4161,7 @@ static int32_t sys_pselect6(struct isr_regs *regs) {
         if (elapsed >= timeout_ms)
             return 0;
         t->state = TASK_INTERRUPTIBLE;
+        asm volatile("sti; hlt");
         schedule();
         if (t->sig_pending & ~t->sig_blocked)
             return -4;
@@ -4145,6 +4323,7 @@ static int32_t sys_rt_sigsuspend(struct isr_regs *regs) {
     task_t *me = get_current_task();
     if (me) {
         me->state = TASK_INTERRUPTIBLE;
+        asm volatile("sti; hlt");
         schedule();
     }
     return -4; /* -EINTR */
@@ -4208,6 +4387,36 @@ static int32_t sys_getgroups32(struct isr_regs *regs) { (void)regs; return 0; }
 static int32_t sys_setgroups32(struct isr_regs *regs) { (void)regs; return 0; }
 static int32_t sys_setresuid32(struct isr_regs *regs) { (void)regs; return 0; }
 static int32_t sys_setresgid32(struct isr_regs *regs) { (void)regs; return 0; }
+
+/* SYS_GETRESUID32 (209): get real, effective, and saved user IDs.
+ *   ebx = *ruid, ecx = *euid, edx = *suid
+ *   Returns: 0 on success, -errno on error. */
+static int32_t sys_getresuid32(struct isr_regs *regs) {
+    uint32_t *ruid = (uint32_t *)regs->ebx;
+    uint32_t *euid = (uint32_t *)regs->ecx;
+    uint32_t *suid = (uint32_t *)regs->edx;
+    task_t *t = get_current_task();
+    if (!t) return -14;
+    if (ruid) *ruid = t->uid;
+    if (euid) *euid = t->euid;
+    if (suid) *suid = t->euid;  /* saved uid = euid for us */
+    return 0;
+}
+
+/* SYS_GETRESGID32 (211): get real, effective, and saved group IDs.
+ *   ebx = *rgid, ecx = *egid, edx = *sgid
+ *   Returns: 0 on success, -errno on error. */
+static int32_t sys_getresgid32(struct isr_regs *regs) {
+    uint32_t *rgid = (uint32_t *)regs->ebx;
+    uint32_t *egid = (uint32_t *)regs->ecx;
+    uint32_t *sgid = (uint32_t *)regs->edx;
+    task_t *t = get_current_task();
+    if (!t) return -14;
+    if (rgid) *rgid = t->gid;
+    if (egid) *egid = t->egid;
+    if (sgid) *sgid = t->egid;  /* saved gid = egid for us */
+    return 0;
+}
 
 /* SYS_FACCESSAT (307): check file access relative to a directory fd.
  *   ebx = dirfd (AT_FDCWD = -100), ecx = path, edx = mode
@@ -4314,6 +4523,7 @@ static void syscall_table_init(void) {
     syscall_table[SYS_MPROTECT]        = sys_mprotect;      /* 125 */
     syscall_table[SYS_GETPGID]         = sys_getpgid;       /* 132 */
     syscall_table[SYS_NEWSELECT]       = sys_newselect;     /* 142 */
+    syscall_table[SYS_READV]           = sys_readv;         /* 145 */
     syscall_table[SYS_WRITEV]          = sys_writev;        /* 146 */
     syscall_table[SYS_NANOSLEEP]       = sys_nanosleep;     /* 162 */
     syscall_table[SYS_POLL]            = sys_poll;          /* 168 */
@@ -4338,7 +4548,9 @@ static void syscall_table_init(void) {
     syscall_table[SYS_GETGROUPS32]     = sys_getgroups32;   /* 205 */
     syscall_table[SYS_SETGROUPS32]     = sys_setgroups32;   /* 206 */
     syscall_table[SYS_SETRESUID32]     = sys_setresuid32;   /* 208 */
+    syscall_table[SYS_GETRESUID32]     = sys_getresuid32;   /* 209 */
     syscall_table[SYS_SETRESGID32]     = sys_setresgid32;   /* 210 */
+    syscall_table[SYS_GETRESGID32]     = sys_getresgid32;   /* 211 */
     syscall_table[SYS_CHOWN32]         = sys_chown32;       /* 212 */
     syscall_table[SYS_SETUID32]        = sys_setuid32;      /* 213 */
     syscall_table[SYS_SETGID32]        = sys_setgid32;      /* 214 */
@@ -4346,6 +4558,7 @@ static void syscall_table_init(void) {
     syscall_table[SYS_FCNTL64]         = sys_fcntl64;       /* 221 */
     syscall_table[SYS_GETTID]          = sys_gettid;        /* 224 */
     syscall_table[SYS_SET_THREAD_AREA] = sys_set_thread_area;/* 243 */
+    syscall_table[SYS_SET_TID_ADDRESS] = sys_set_tid_address;/* 258 */
     syscall_table[SYS_EXIT_GROUP]      = sys_exit_group;    /* 252 */
     syscall_table[SYS_CLOCK_GETTIME]   = sys_clock_gettime; /* 265 */
     syscall_table[SYS_OPENAT]          = sys_openat;        /* 295 */
@@ -4380,7 +4593,6 @@ static void syscall_table_init(void) {
     /* Suppress unused-function warnings for legacy syscall implementations */
     (void)sys_usleep;
     (void)sys_gettime;
-    (void)sys_readv;
 }
 
 /* ------------------------------------------------------------------ */
@@ -4401,6 +4613,7 @@ static void syscall_dispatch(struct isr_regs *regs) {
     uint32_t num = regs->eax;
 
     if (num >= NUM_SYSCALLS || syscall_table[num] == NULL) {
+        //printf("[DEBUG] UNHANDLED syscall %u\n", num);
         regs->eax = (uint32_t)-38;   /* -ENOSYS */
         return;
     }

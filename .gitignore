@@ -6,6 +6,6 @@ src/bash/
 src/coreutils/
 src/doomgeneric/
 src/quakegeneric-main/
-src/tcc/
+src/tinycc/
 src/musl-1.2.6/
 src/musl-out/

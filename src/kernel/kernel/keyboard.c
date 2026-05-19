@@ -276,6 +276,20 @@ int keyboard_has_events(void) {
     return eq_tail != eq_head;
 }
 
+/* Check if there is a key-press event with ASCII available.
+ * Used by the TTY layer to properly report readability — release events
+ * and non-ASCII events don't produce characters for read(). */
+int keyboard_has_ascii_press(void) {
+    uint32_t pos = eq_tail;
+    while (pos != eq_head) {
+        key_event_t *ev = &event_queue[pos];
+        if ((ev->flags & KEY_EVENT_PRESS) && ev->ascii != 0)
+            return 1;
+        pos = (pos + 1) & (EVENT_QUEUE_SIZE - 1);
+    }
+    return 0;
+}
+
 /*
  * Blocking get_key() — backwards-compatible with the shell.
  * Waits for a key-press event with a non-zero ASCII character.

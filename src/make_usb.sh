@@ -202,10 +202,41 @@ else
     echo "  WARNING: bash binary not found at $BASH_BIN"
 fi
 
+# --- GUI ---
+GUI_BIN="$SCRIPT_DIR/gui"
+if [ -f "$GUI_BIN" ]; then
+    echo "  Installing gui..."
+    i686-elf-strip -o "$RAMDISK_MNT/bin/gui" "$GUI_BIN"
+else
+    echo "  WARNING: gui binary not found at $GUI_BIN"
+fi
+
+# --- Neofetch ---
+NEOFETCH_BIN="$SCRIPT_DIR/neofetch"
+if [ -f "$NEOFETCH_BIN" ]; then
+    echo "  Installing neofetch..."
+    cp "$NEOFETCH_BIN" "$RAMDISK_MNT/bin/neofetch"
+    chmod 755 "$RAMDISK_MNT/bin/neofetch"
+else
+    echo "  WARNING: neofetch not found at $NEOFETCH_BIN"
+fi
+
+# --- Simple test script (verifies shebang execution) ---
+cat > "$RAMDISK_MNT/bin/test_sh" << 'TESTSH'
+#!/bin/bash
+echo "shebang works!"
+TESTSH
+chmod 755 "$RAMDISK_MNT/bin/test_sh"
+
 # --- Root home directory ---
 cat > "$RAMDISK_MNT/root/.bashrc" << 'BASHRC'
-export PS1='\u@\h:\w\$ '
+export PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
 export PATH=/bin:/usr/bin
+
+# Enable color support
+export LS_COLORS='rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=00:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.gz=01;31:*.bz2=01;31:*.xz=01;31:*.zip=01;31:*.jpg=01;35:*.png=01;35:*.gif=01;35:*.bmp=01;35:*.c=00;33:*.h=00;33:*.o=01;30'
+alias ls='ls --color=auto'
+alias dir='dir --color=auto'
 BASHRC
 
 cat > "$RAMDISK_MNT/root/.profile" << 'PROFILE'

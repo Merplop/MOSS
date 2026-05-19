@@ -75,6 +75,7 @@
 #define SYS_MPROTECT       125
 #define SYS_SIGALTSTACK    186
 #define SYS_NEWSELECT      142
+#define SYS_READV          145
 #define SYS_WRITEV         146
 #define SYS_NANOSLEEP      162
 #define SYS_POLL           168
@@ -101,12 +102,15 @@
 #define SYS_SETGID32       214
 #define SYS_GETPGID        132
 #define SYS_SETRESUID32    208
+#define SYS_GETRESUID32    209
 #define SYS_SETRESGID32    210
+#define SYS_GETRESGID32    211
 #define SYS_CHOWN32        212
 #define SYS_GETDENTS64     220
 #define SYS_FCNTL64        221
 #define SYS_GETTID         224
 #define SYS_SET_THREAD_AREA 243
+#define SYS_SET_TID_ADDRESS 258
 #define SYS_EXIT_GROUP     252
 #define SYS_CLOCK_GETTIME  265
 #define SYS_OPENAT         295

@@ -119,6 +119,16 @@ else
     echo "  WARNING: bash binary not found at $BASH_BIN"
 fi
 
+# --- GUI ---
+echo "Copying gui ..."
+GUI_BIN="$SCRIPT_DIR/gui"
+if [ -f "$GUI_BIN" ]; then
+    i686-elf-strip -o "$MOUNT_DIR/bin/gui" "$GUI_BIN"
+    echo "  gui installed"
+else
+    echo "  WARNING: gui binary not found at $GUI_BIN"
+fi
+
 # --- Neofetch ---
 echo "Copying neofetch ..."
 NEOFETCH_BIN="$SCRIPT_DIR/neofetch"
@@ -141,7 +151,7 @@ chmod 755 "$MOUNT_DIR/bin/test_sh"
 # --- Root home directory ---
 echo "Creating /root/.bashrc ..."
 cat > "$MOUNT_DIR/root/.bashrc" << 'BASHRC'
-export PS1='\u@\h:\w\$ '
+export PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
 export PATH=/bin:/usr/bin
 
 # Enable color support
